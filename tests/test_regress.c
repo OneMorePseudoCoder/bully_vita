@@ -640,6 +640,69 @@ int main(void) {
            again, BACKUP_FORMAT - 1);
   }
 
+  // A restore that cannot get memory must not retire the texture.
+  //
+  // vglGetTexDataPointer returning NULL means the pools are full right now --
+  // which is precisely when the cache is working hardest to empty them, so it
+  // is also when a second attempt is most likely to work. Treating it as "this
+  // texture is gone" threw away the only copy and marked it unbacked for the
+  // rest of the session. With the pools genuinely exhausted every restore took
+  // that path as the game asked for it: a real session logged 21461 failures
+  // and stopped having surfaces.
+  {
+    harness_start_empty(192 * MB);
+    GLuint id = tex_upload(0xC0FFEE00u, 512, 512, TEX_BYTES);
+    drain();
+    frames(TEXTURE_IDLE_FRAMES * 4);
+
+    // Force it out, then make the next allocation fail the way a full pool does.
+    // Push it out through the cache's own path rather than by hand, so what is
+    // held afterwards is exactly what a real eviction leaves.
+    assert(backup_capture(&textures[id], id) == 1 && "the copy has to be taken");
+    evict_texture(id);
+    assert(textures[id].evicted && "the texture has to be evicted to restore it");
+    uint32_t failed_before = restore_failed_count;
+    uint32_t later_before = restore_deferred_count;
+
+    fake_reject_next_upload = 1;
+    glBindTextureHook(GL_TEXTURE_2D, id);
+
+    assert(restore_deferred_count == later_before + 1 && "counted as a shortage");
+    assert(restore_failed_count == failed_before && "and not as a failure");
+    assert(!textures[id].unbacked && "the texture was retired over a shortage");
+    assert(textures[id].levels > 0 && "the saved shape was thrown away");
+    assert(textures[id].evicted && "it must stay evicted so the next bind retries");
+
+    // Now there is room again. The next bind must bring it back, byte for byte.
+    glBindTextureHook(GL_TEXTURE_2D, id);
+    assert(!textures[id].evicted && "the retry did not restore it");
+    assert(fake_sampled(id) == fake_fingerprint_of(0xC0FFEE00u) &&
+           "it came back as something else");
+    printf("shortage     : a restore with no memory is retried, not retired  OK\n");
+
+    // The other side of the same split. A file that is not there is not a
+    // shortage and never becomes one: retrying it means a failed card open on
+    // every bind of that texture for the rest of the session.
+    GLuint gone = tex_upload(0xDEAD0000u, 512, 512, TEX_BYTES);
+    drain();
+    frames(TEXTURE_IDLE_FRAMES * 4);
+    card_writes_allowed = 1;
+    textures[gone].ram_copy = NULL; // force the card path rather than the heap
+    assert(backup_capture(&textures[gone], gone) == 1);
+    evict_texture(gone);
+    assert(fake_wipe_store() > 0 && "the harness had a file to delete");
+
+    failed_before = restore_failed_count;
+    later_before = restore_deferred_count;
+    glBindTextureHook(GL_TEXTURE_2D, gone);
+    assert(restore_failed_count == failed_before + 1 &&
+           "a missing file must be permanent");
+    assert(restore_deferred_count == later_before &&
+           "a missing file must not be retried as a shortage");
+    assert(textures[gone].unbacked && "and the texture must be retired");
+    printf("file gone    : a missing copy is permanent, not retried  OK\n");
+  }
+
   printf("PASS\n");
   return 0;
 }

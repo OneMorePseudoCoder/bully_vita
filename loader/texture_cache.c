@@ -157,6 +157,10 @@ static uint32_t ram_evicted_count, card_evicted_count, ram_restored_count;
 // full and the frame's card write already spent. Reclaiming that is blocked
 // looks identical to reclaiming that is not needed unless this is counted.
 static uint32_t deferred_count;
+// Restores that found no memory and will be asked again, as against the ones
+// that found nothing usable and never will be. Keeping them apart is the whole
+// point: the first is a shortage, the second is a texture that is gone.
+static uint32_t restore_deferred_count;
 
 
 // vglMemFree refuses VGL_MEM_ALL: it is the enum terminator and the wrapper
@@ -775,6 +779,7 @@ void texture_cache_init(void) {
   blocked_frames = 0;
   evicted_count = restored_count = restore_failed_count = 0;
   ram_evicted_count = card_evicted_count = ram_restored_count = deferred_count = 0;
+  restore_deferred_count = 0;
   memset(pool_start, 0, sizeof(pool_start));
 
   // The store lives next to the game's own files, in the data directory the
@@ -1010,6 +1015,14 @@ static int backup_capture(TextureInfo *info, GLuint id) {
   return 1;
 }
 
+// What a failed restore means. The difference matters more than it looks: one
+// of these is a texture that can never come back and the other is a texture
+// that could not come back THIS FRAME, and treating the second as the first is
+// how a session ends with twenty-one thousand failures and no scenery.
+#define RESTORE_OK 1
+#define RESTORE_GONE 0     // the bytes are unusable; nothing will fix this
+#define RESTORE_NOT_NOW (-1) // no memory to put it in; try again next bind
+
 // Puts an evicted texture back exactly as the game uploaded it, by replaying the
 // original calls. Returns 0 if the copy turned out not to be usable, having left
 // a valid placeholder behind.
@@ -1045,7 +1058,7 @@ static int restore_texture(GLuint id) {
     if (!restore_scratch) {
       restore_scratch = malloc((size_t)TEXTURE_BACKUP_MAX_KB * 1024);
       if (!restore_scratch)
-        return 0; // no room to read it back; the placeholder stays
+        return RESTORE_NOT_NOW; // no room to read it back; try again later
     }
 
     uint32_t t_open = upload_now_us();
@@ -1053,7 +1066,7 @@ static int restore_texture(GLuint id) {
     uint32_t t_opened = upload_now_us();
     restore_open_us += t_opened - t_open;
     if (fd < 0)
-      return 0;
+      return RESTORE_GONE; // the file is not there; nothing will bring it back
     BackupRecord record;
     memset(&record, 0, sizeof(record));
     int header = sceIoRead(fd, &record, sizeof(record));
@@ -1086,7 +1099,7 @@ static int restore_texture(GLuint id) {
       // the next one writes a good one.
       sceIoRemove(path);
       store_forget(info->key);
-      return 0;
+      return RESTORE_GONE;
     }
     saved = restore_scratch;
     saved_bytes = record.bytes;
@@ -1114,21 +1127,31 @@ static int restore_texture(GLuint id) {
   restore_replay_us += t_copy - t_replay;
   void *pixels = vglGetTexDataPointer(GL_TEXTURE_2D);
   if (!pixels) {
-    // The caller marks this texture unbacked, so the copy will never be asked
-    // for again. Give the heap back rather than holding it for nothing and
-    // leaving ram_cache_bytes claiming it forever.
-    backup_release(info);
+    // The replay could not get memory. That is the pools being full right now,
+    // not anything wrong with this texture -- and the pools being full is the
+    // exact moment the cache is working hardest to empty them, so it is also
+    // the moment this is most likely to succeed a second later.
+    //
+    // This used to release the backup and let the caller mark the texture
+    // unbacked, which threw away the only copy and retired the texture for the
+    // rest of the session over a shortage that lasted a frame. With the pools
+    // genuinely exhausted every restore took that path, so every texture the
+    // game asked for was retired as it asked for it: 21461 failures in one
+    // session and the world stopped having surfaces. Keep the copy, keep the
+    // texture evicted, and let the next bind ask again.
     install_placeholder(id);
-    return 0;
+    return RESTORE_NOT_NOW;
   }
   // The buffer vitaGL has just handed back has to be the size the one we read
   // out of was, or this copy runs off the end of it. They are allocated from
   // the same request for the same shape, so a disagreement means the texture is
   // not what was saved -- refuse rather than write past it.
   if ((uint32_t)vglMallocUsableSize(pixels) != saved_bytes) {
+    // A real mismatch, not a shortage: what came back is not the shape that was
+    // saved, so the saved bytes are no use to this texture and never will be.
     backup_release(info);
     install_placeholder(id);
-    return 0;
+    return RESTORE_GONE;
   }
   memcpy(pixels, saved, saved_bytes);
   restore_copy_us += upload_now_us() - t_copy;
@@ -1153,7 +1176,7 @@ static int restore_texture(GLuint id) {
   tracked_bytes += info->resident_size;
   info->evicted = 0;
   info->last_frame = frame_counter;
-  return 1;
+  return RESTORE_OK;
 }
 
 /*
@@ -1520,11 +1543,17 @@ void glBindTextureHook(GLenum target, GLuint texture) {
     }
 
     // The game is about to draw with a texture we dropped. Put it back.
-    if (!is_restorable(info) || !restore_texture(texture)) {
+    int got = is_restorable(info) ? restore_texture(texture) : RESTORE_GONE;
+    if (got == RESTORE_OK) {
+      restored_count++;
+    } else if (got == RESTORE_GONE) {
       info->unbacked = 1; // nothing we can do; stop pretending it is reloadable
       restore_failed_count++;
     } else {
-      restored_count++;
+      // No memory for it this frame. The copy is still held and the texture is
+      // still evicted, so the next bind asks again -- by which time the
+      // eviction this shortage triggers has had a chance to make room.
+      restore_deferred_count++;
     }
   }
 
@@ -1692,5 +1721,6 @@ void texture_cache_stats(TextureCacheStats *out) {
   out->stored = (int)store_files;
   out->starved = (int)starved_frames;
   out->deferred = (int)deferred_count;
+  out->restore_deferred = (int)restore_deferred_count;
   out->blocked = (int)blocked_frames;
 }

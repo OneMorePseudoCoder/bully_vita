@@ -187,6 +187,19 @@ int fake_set_store_version(int version) {
   return n;
 }
 
+// Deletes every stored texture, leaving the index believing they are there.
+int fake_wipe_store(void) {
+  const char *base = getenv("TEXCACHE_DIR");
+  char cmd[512];
+  snprintf(cmd, sizeof(cmd),
+           "find '%s' -name '*.tex' -delete -print 2>/dev/null | wc -l",
+           base ? base : ".");
+  FILE *p = popen(cmd, "r");
+  int n = 0;
+  if (p) { if (fscanf(p, "%d", &n) != 1) n = 0; pclose(p); }
+  return n;
+}
+
 SceUID sceIoOpen(const char *file, int flags, SceMode mode) {
   int f = 0;
   if ((flags & SCE_O_RDWR) == SCE_O_RDWR) f |= O_RDWR;

@@ -76,6 +76,7 @@ typedef struct {
   int stored;  // textures the store carried in from previous runs
   int starved; // frames it failed to get back under its limits
   int deferred; // evictions it wanted to make and could not, for want of a copy
+  int restore_deferred; // restores that found no memory and will be asked again
   int blocked; // consecutive frames it has wanted to free memory and freed none
 } TextureCacheStats;
 
