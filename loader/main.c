@@ -166,9 +166,42 @@ int OS_ScreenGetWidth(void) {
 // as the original left it.
 int frames_swapped;
 
+// One line a minute on whether memory is bounded and whether the cache is
+// thrashing. Everything here is a counter already kept; nothing is sampled for
+// the sake of this, and mallinfo is read once by the texture tick either way.
+static void memory_heartbeat(void) {
+  if (frames_swapped % MEMORY_HEARTBEAT_FRAMES)
+    return;
+
+  TextureCacheStats tex;
+  StreamingStats stream;
+  VertexCacheStats vert;
+  texture_cache_stats(&tex);
+  streaming_patch_stats(&stream);
+  vertex_cache_stats(&vert);
+
+  static int peak_mb;
+  int heap_mb = (int)(texture_cache_heap_used() / (1024 * 1024));
+  if (heap_mb > peak_mb)
+    peak_mb = heap_mb;
+
+  traceLog("mem %d: heap %d MB (peak %d) | tex %d MB held, %d parked | "
+           "ev %d re %d fail %d spill %d free %d | vgl free ram %d cdram %d "
+           "phycont %d MB | vert %d KB held, %d KB back | stream %d/%d MB, "
+           "%d refused\n",
+           frames_swapped, heap_mb, peak_mb, tex.tracked_mb, tex.parked_mb,
+           tex.evicted, tex.restored, tex.failed, tex.spilled, tex.reused,
+           (int)(vglMemFree(VGL_MEM_RAM) / (1024 * 1024)),
+           (int)(vglMemFree(VGL_MEM_VRAM) / (1024 * 1024)),
+           (int)(vglMemFree(VGL_MEM_PHYCONT) / (1024 * 1024)),
+           vert.held_kb, vert.released_kb, stream.memory_used_mb,
+           stream.budget_mb, stream.refusals);
+}
+
 int ProcessEvents(void) {
   frames_swapped++;
   movie_draw_frame();
+  memory_heartbeat();
   // Once a frame: sample how much room is left in each pool and, if it is
   // running out, evict the textures that have gone longest without being drawn.
   texture_cache_tick();

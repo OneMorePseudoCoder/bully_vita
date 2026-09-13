@@ -149,6 +149,22 @@
 // A few seconds is long enough that anything still on screen is safe, and short
 // enough that the area you just left can be reclaimed to make room for the one
 // you are walking into.
+// How often the loader says what memory is doing, in frames.
+//
+// The instrumentation this port was carrying is gone -- it was measurement for
+// its own sake and it cost frames. This is not that. The whole point of the
+// work here is that memory stays bounded and the game stops dying after an
+// hour, and with nothing reported at all there is no way to tell a session that
+// proved it from a session that got lucky. One line a minute over a long
+// session is a few dozen lines.
+//
+// It also settles the question a silent log cannot: an area that runs at 6 fps
+// is either the cache thrashing -- evicting and restoring the same textures --
+// or it is the game, and the eviction and restore counts say which within one
+// heartbeat. Guessing between those two from a frame rate is how this port
+// spent a week chasing the wrong thing.
+#define MEMORY_HEARTBEAT_FRAMES 1800
+
 #define TEXTURE_CACHE_IDLE_FRAMES 240
 
 // There was a MEMORY_VITAGL_CIRCULAR_POOL_MB here, set to 48, with a comment

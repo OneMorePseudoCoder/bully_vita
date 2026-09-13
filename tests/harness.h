@@ -68,6 +68,12 @@ int fake_tear_one_store_file(long keep_bytes);
 // Rewrites one 32-bit word of a stored texture's header.
 int fake_scramble_store_word(int word_index);
 const char *fake_last_scrambled_path(void);
+
+// Renames stored textures to the previous format's naming.
+int fake_age_store_files(void);
+
+// Rewrites the version suffix on stored textures.
+int fake_set_store_version(int version);
 extern size_t fake_heap_used;
 unsigned fake_store_writes(void);
 

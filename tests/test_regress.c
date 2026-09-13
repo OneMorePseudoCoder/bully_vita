@@ -586,6 +586,60 @@ int main(void) {
            "by verify  OK\n");
   }
 
+  // A store left by an older loader must be gone by the end of boot, not
+  // believed and then found wanting one file at a time during play.
+  //
+  // The index is built from filenames; nothing opens a file. So when the record
+  // layout changed and the name did not, a whole store of unreadable files
+  // indexed as good -- and each one then cost a card open, a read, a failed
+  // check and a delete at the moment its texture was wanted, on the frame
+  // thread, having already told the eviction it was free.
+  {
+    harness_start_empty(192 * MB);
+    const size_t over = ((size_t)TEXTURE_BUDGET_MB + TEXTURE_RAM_CACHE_MB + 96) * MB;
+    const int count = (int)(over / TEX_BYTES);
+    for (int i = 0; i < count; i++) {
+      tex_upload(0x9F000000u + (unsigned)i, 512, 512, TEX_BYTES);
+      drain();
+      texture_cache_tick();
+    }
+    frames(TEXTURE_IDLE_FRAMES * 8);
+    unsigned written = fake_store_files();
+    assert(written > 0 && "this block needs a store to age");
+
+    // Rename every file to the shape the previous format used: the same key and
+    // size, without the version. Byte for byte what was on the card before.
+    assert(fake_age_store_files() == (int)written && "all of them renamed");
+    assert(fake_store_files() == written && "the files are still there");
+
+    fake_reset(192 * MB);
+    texture_cache_init();
+    assert(store_files == 0 &&
+           "a store in the old format was indexed as usable");
+    assert(fake_store_files() == 0 &&
+           "and it was left on the card rather than cleared out");
+    printf("old format   : %u files from a previous format discarded at boot  OK\n",
+           written);
+
+    // And the other way a store goes stale: written by a loader that did carry
+    // a format, just not this one. Accepting any version is the same bug with
+    // an extra step.
+    for (int i = 0; i < count; i++) {
+      tex_upload(0xA7000000u + (unsigned)i, 512, 512, TEX_BYTES);
+      drain();
+      texture_cache_tick();
+    }
+    frames(TEXTURE_IDLE_FRAMES * 8);
+    unsigned again = fake_store_files();
+    assert(again > 0);
+    assert(fake_set_store_version(BACKUP_FORMAT - 1) == (int)again);
+    fake_reset(192 * MB);
+    texture_cache_init();
+    assert(store_files == 0 && "a store from a different format version was indexed");
+    printf("old version  : %u files stamped format %d discarded at boot  OK\n",
+           again, BACKUP_FORMAT - 1);
+  }
+
   printf("PASS\n");
   return 0;
 }

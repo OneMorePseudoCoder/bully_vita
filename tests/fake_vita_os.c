@@ -144,6 +144,49 @@ int fake_scramble_store_word(int word_index) {
   return ok;
 }
 
+// Renames every stored texture to the name the previous format used -- the
+// same key and size, with the version suffix stripped. Returns how many.
+int fake_age_store_files(void) {
+  const char *base = getenv("TEXCACHE_DIR");
+  char cmd[1024];
+  snprintf(cmd, sizeof(cmd),
+           "find '%s' -name '*_*_*.tex' 2>/dev/null | while read -r f; do "
+           "  n=$(basename \"$f\"); d=$(dirname \"$f\"); "
+           "  mv \"$f\" \"$d/${n%%_*.tex}.tex\" && echo x; "
+           "done | wc -l",
+           base ? base : ".");
+  FILE *p = popen(cmd, "r");
+  int n = 0;
+  if (p) {
+    if (fscanf(p, "%d", &n) != 1)
+      n = 0;
+    pclose(p);
+  }
+  return n;
+}
+
+// Rewrites the version suffix on every stored texture to `version`, which is
+// the other way a store goes stale: written by a loader that had a format, just
+// not this one. Returns how many were renamed.
+int fake_set_store_version(int version) {
+  const char *base = getenv("TEXCACHE_DIR");
+  char cmd[1024];
+  snprintf(cmd, sizeof(cmd),
+           "find '%s' -name '*_*_*.tex' 2>/dev/null | while read -r f; do "
+           "  n=$(basename \"$f\"); d=$(dirname \"$f\"); "
+           "  mv \"$f\" \"$d/${n%%_*.tex}_%d.tex\" && echo x; "
+           "done | wc -l",
+           base ? base : ".", version);
+  FILE *p = popen(cmd, "r");
+  int n = 0;
+  if (p) {
+    if (fscanf(p, "%d", &n) != 1)
+      n = 0;
+    pclose(p);
+  }
+  return n;
+}
+
 SceUID sceIoOpen(const char *file, int flags, SceMode mode) {
   int f = 0;
   if ((flags & SCE_O_RDWR) == SCE_O_RDWR) f |= O_RDWR;

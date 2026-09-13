@@ -59,7 +59,25 @@
 // Bumped when the store became persistent and its files became content-named:
 // a record written by an older build means something else entirely, and must
 // not be mistaken for one of these.
-#define BACKUP_MAGIC 0x32435442
+#define BACKUP_MAGIC 0x33435442
+
+// The store's on-card format. BUMP THIS whenever BackupRecord's layout changes
+// or a field changes meaning, and bump BACKUP_MAGIC with it.
+//
+// It goes in the filename, and that is the point. The scan builds the index
+// from names alone -- it never opens a file, because opening 1761 of them at
+// boot is most of a minute. So a store written by an older loader parses,
+// indexes, and is believed. Every one of those entries then costs a card open,
+// a read, a failed check and a delete, in the middle of gameplay, on the frame
+// thread, at the moment the texture is wanted -- and worse than having no store
+// at all, because store_has told the eviction it was free and it was not.
+//
+// This happened. The verify hash added two words to the record and nothing
+// marked the format, so a run reported "1761 textures kept from previous runs"
+// about a store where not one file was readable. With the version in the name
+// they simply fail to parse, and the scan deletes them in the pass it already
+// makes.
+#define BACKUP_FORMAT 3
 
 typedef struct {
   uint32_t magic;
@@ -305,8 +323,9 @@ static int is_restorable(const TextureInfo *info) {
 // drain to nothing. A texture already in the store costs nothing to evict: the
 // bytes are on the card, so dropping it is free.
 static void texture_path(char *out, size_t out_size, uint64_t key, uint32_t bytes) {
-  snprintf(out, out_size, "%s/%02x/%08x%08x_%08x.tex", TEXTURE_CACHE_DIR,
-           (unsigned)(key & 0xff), (unsigned)(key >> 32), (unsigned)key, (unsigned)bytes);
+  snprintf(out, out_size, "%s/%02x/%08x%08x_%08x_%u.tex", TEXTURE_CACHE_DIR,
+           (unsigned)(key & 0xff), (unsigned)(key >> 32), (unsigned)key,
+           (unsigned)bytes, (unsigned)BACKUP_FORMAT);
 }
 
 /*
@@ -639,9 +658,13 @@ static void scan_store(void) {
       if (entry.d_name[0] == '.')
         continue;
 
-      unsigned hi = 0, lo = 0, bytes = 0;
+      unsigned hi = 0, lo = 0, bytes = 0, format = 0;
       char tail = 0;
-      int fields = sscanf(entry.d_name, "%8x%8x_%8x.tex%c", &hi, &lo, &bytes, &tail);
+      // Four conversions, not three. A name from an older format stops at the
+      // dot where this expects an underscore, comes back with three, and is
+      // deleted below with everything else that does not parse.
+      int fields = sscanf(entry.d_name, "%8x%8x_%8x_%u.tex%c", &hi, &lo, &bytes,
+                          &format, &tail);
       uint64_t key = ((uint64_t)hi << 32) | lo;
       // A file has to be longer than its own header and no longer than a
       // restore could read back, or it was torn -- the console lost power
@@ -658,7 +681,8 @@ static void scan_store(void) {
       // there too, by the checksum.
       SceOff floor_size = (SceOff)sizeof(BackupRecord);
       SceOff ceil_size = floor_size + (SceOff)TEXTURE_BACKUP_MAX_KB * 1024;
-      int usable = fields == 3 && key && bytes >= TEXTURE_BACKUP_MIN_BYTES &&
+      int usable = fields == 4 && format == BACKUP_FORMAT && key &&
+                   bytes >= TEXTURE_BACKUP_MIN_BYTES &&
                    bytes <= (uint32_t)TEXTURE_BACKUP_MAX_KB * 1024 &&
                    // Only judged when a size is actually reported. A platform
                    // that leaves this zero would otherwise have its entire
