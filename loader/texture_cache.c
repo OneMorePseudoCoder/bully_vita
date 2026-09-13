@@ -963,6 +963,36 @@ static int backup_capture(TextureInfo *info, GLuint id) {
   // this until after it, which is where it started, meant a free eviction was
   // refused for the cost of one it was not going to pay.
   if (store_has(info->key, info->resident_size)) {
+    // Look at the buffer before saying yes, even though there is nothing to
+    // read out of it.
+    //
+    // Returning 1 is what lets the caller call install_placeholder, and
+    // install_placeholder is what makes vitaGL free the pixels. There are three
+    // ways out of this function with a 1, and the other two both fetch the
+    // pointer and refuse anything vglMallocUsableSize will not answer sensibly
+    // for. This one never touched it -- that was the point of it.
+    //
+    // On hardware an eviction took this shortcut on a texture whose CDRAM
+    // allocation header had been overwritten with texture pixels. vitaGL freed
+    // it, sceClibMspaceFree read 0xc61098c6 out of the pixels as the chunk
+    // header, worked out a chunk of 3.3 GB against a 96 MB pool, and walked to
+    // chunk + size, which wrapped past the end of the address space. That is
+    // the crash. The check below is the one the other two paths already make,
+    // and 3.3 GB is a great deal more than TEXTURE_BACKUP_MAX_KB, so it would
+    // have refused the eviction and the texture would simply have stayed.
+    //
+    // It cannot fix whatever made the pointer stale. It stops this cache being
+    // the thing that steps on it.
+    glBindTexture(GL_TEXTURE_2D, id);
+    const void *held = vglGetTexDataPointer(GL_TEXTURE_2D);
+    uint32_t usable = held ? (uint32_t)vglMallocUsableSize((void *)held) : 0;
+    if (!usable || usable > (uint32_t)TEXTURE_BACKUP_MAX_KB * 1024) {
+      traceLog("texture cache: not dropping %u, key %08x%08x -- vitaGL calls its "
+               "%u byte texture %u bytes\n",
+               id, (unsigned)(info->key >> 32), (unsigned)info->key,
+               (unsigned)info->resident_size, (unsigned)usable);
+      return 0; // never touch this one again
+    }
     info->backup_bytes = info->resident_size;
     store_reused++;
     return 1;
@@ -1570,7 +1600,19 @@ void texture_cache_tick(void) {
     return;
 
   size_t before = tracked_bytes;
+  uint32_t evicted_before = evicted_count;
   evict_textures(target, TEXTURE_IDLE_MS);
+  // What the tick actually managed, on the ticks that managed anything.
+  //
+  // "reclaiming" above is written before the work and "settled" only on the way
+  // back out, so a burst that dies in the middle leaves a log saying it started
+  // and nothing else -- which is exactly the log this line was added from. Only
+  // on ticks that freed something, so it stays as rare as the bursts are.
+  if (evicted_count != evicted_before)
+    traceLog("texture cache: %u out, holding %d MB (was %d), ram %d MB free\n",
+             evicted_count - evicted_before, (int)(tracked_bytes / (1024 * 1024)),
+             (int)(before / (1024 * 1024)),
+             (int)(free_now[VGL_POOL_WATCHED] / (1024 * 1024)));
   // Wanted to reclaim and got nothing: the heap tier is full or the game has
   // the heap, and the card is shut. Counted so that it cannot go on forever.
   if (tracked_bytes < before)

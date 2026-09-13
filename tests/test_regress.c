@@ -642,6 +642,77 @@ int main(void) {
 
   // A restore that cannot get memory must not retire the texture.
   //
+  // A texture vitaGL will not describe is a texture this cache must not drop.
+  //
+  // Evicting is not "put a copy somewhere and forget the pixels" -- the pixels
+  // are freed by vitaGL, from its own allocator, and the allocator reads the
+  // block's header to do it. If that header has been overwritten, freeing is
+  // the operation that finds out. On hardware it found out with a chunk size of
+  // 3.3 GB read out of texture pixels and a walk to an address that wrapped
+  // past the end of memory, on the first eviction of the session.
+  //
+  // The cache cannot repair a broken allocation. What it can do is not be the
+  // thing that steps on it: every path that ends in an eviction asks vitaGL how
+  // big the buffer is first, and an answer that cannot be true means leave the
+  // texture exactly where it is.
+  {
+    harness_start_empty(192 * MB);
+    fake_heap_used = (size_t)MEMORY_NEWLIB_MB * MB; // no heap tier: it goes to the card
+    GLuint id = tex_upload(0xDEFEC7EDu, 512, 512, TEX_BYTES);
+    drain();
+    frames(TEXTURE_IDLE_FRAMES * 2);
+    glBindTextureHook(GL_TEXTURE_2D, 0);
+    card_writes_allowed = 1;
+    evict_texture(id);
+    assert(textures[id].evicted && "the copy had to reach the card");
+    assert(fake_store_files() > 0);
+    glBindTextureHook(GL_TEXTURE_2D, id); // bring it back; the file stays
+    assert(!textures[id].evicted && "it had to come back for the rest of this");
+
+    // Now the same texture is in the store, so the next eviction is the cheap
+    // one: the cache knows the bytes are already saved and frees the pixels
+    // without reading them. That is the path that has to look anyway.
+    fake_slot_usable[id] = (size_t)TEXTURE_BACKUP_MAX_KB * 1024 + 1; // cannot be true
+    size_t tracked_was = tracked_bytes;
+    size_t bytes_was = fake_slot_bytes[id];
+    uint32_t reused_was = store_reused;
+    glBindTextureHook(GL_TEXTURE_2D, 0);
+    card_writes_allowed = 1;
+    evict_texture(id);
+    assert(!textures[id].evicted && "a texture vitaGL cannot size was dropped anyway");
+    assert(fake_slot_bytes[id] == bytes_was && "its pixels were freed");
+    assert(tracked_bytes == tracked_was && "it was accounted as gone");
+    assert(store_reused == reused_was && "it was counted as a free eviction");
+    assert(textures[id].unbacked && "and it must not be considered again");
+    printf("bad header   : an unsizeable texture is left alone, not freed  OK\n");
+
+    // The same for a texture vitaGL will not hand a pointer to at all.
+    fake_slot_usable[id] = 0;
+    textures[id].unbacked = 0; // ask it again
+    glBindTextureHook(GL_TEXTURE_2D, 0);
+    card_writes_allowed = 1;
+    evict_texture(id);
+    assert(!textures[id].evicted && "a texture with no usable size was dropped");
+    assert(fake_slot_bytes[id] == bytes_was && "its pixels were freed");
+    printf("             : and one vitaGL reports as zero bytes  OK\n");
+
+    // And the cheap path still has to be cheap when nothing is wrong with it,
+    // or this guard has quietly turned every store hit into a card write.
+    fake_slot_usable[id] = bytes_was;
+    textures[id].unbacked = 0;
+    uint32_t spilled_was = card_evicted_count, parked_was = ram_evicted_count;
+    reused_was = store_reused;
+    glBindTextureHook(GL_TEXTURE_2D, 0);
+    card_writes_allowed = 1;
+    evict_texture(id);
+    assert(textures[id].evicted && "a sound texture in the store must still go");
+    assert(store_reused == reused_was + 1 && "and go for free");
+    assert(card_evicted_count == spilled_was && "it must not be written again");
+    assert(ram_evicted_count == parked_was && "nor copied to the heap");
+    printf("             : a sound one still evicts for free  OK\n");
+    fake_heap_used = 0;
+  }
+
   // The intro movie is not a texture shortage.
   //
   // Phycont is not a vitaGL pool in this build. PHYCONT_ON_DEMAND makes
