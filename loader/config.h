@@ -163,7 +163,12 @@
 // or it is the game, and the eviction and restore counts say which within one
 // heartbeat. Guessing between those two from a frame rate is how this port
 // spent a week chasing the wrong thing.
-#define MEMORY_HEARTBEAT_FRAMES 1800
+// Time, not frames. A frame count goes quiet exactly when it is needed: at
+// 30 fps 1800 frames is a minute, but the area that prompted this ran at 6, so
+// the same count is five minutes -- and if it dies in there the last reading is
+// five minutes stale. Every twenty seconds of wall clock says the same thing
+// whatever the frame rate is doing.
+#define MEMORY_HEARTBEAT_US (20 * 1000 * 1000)
 
 #define TEXTURE_CACHE_IDLE_FRAMES 240
 
