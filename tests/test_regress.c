@@ -642,6 +642,119 @@ int main(void) {
 
   // A restore that cannot get memory must not retire the texture.
   //
+  // The intro movie is not a texture shortage.
+  //
+  // Phycont is not a vitaGL pool in this build. PHYCONT_ON_DEMAND makes
+  // vglMemFree(PHYCONT) the kernel's answer for the whole process, and
+  // SceAvPlayer takes 23 of the 26 MB for as long as a movie is playing. The
+  // cache samples that pool from the tick, the tick runs from ProcessEvents,
+  // and the movie draws and swaps from ProcessEvents too -- so every session
+  // opened with the cache reading 3 MB of 26, calling it a shortage, and
+  // emptying itself of everything the game had uploaded and was not drawing at
+  // that instant: the menu font, the HUD, the first street. Nineteen textures,
+  // at the same point, in three sessions running.
+  {
+    harness_start_empty(0);
+    fake_set_pools(81 * MB, 105 * MB, 26 * MB); // the figures off the console
+    tick();                                     // takes the starting figures
+    assert(pool_start[2] == 26 * MB && "the fake has to start where hardware does");
+
+    GLuint boot[48];
+    for (int i = 0; i < 48; i++) {
+      boot[i] = tex_upload(0x9E000000u + (unsigned)i, 512, 512, TEX_BYTES);
+      drain();
+    }
+    (void)boot;
+    // Nothing is drawn while the movie is on screen, so every one of them is a
+    // candidate by the time it ends.
+    frames(TEXTURE_IDLE_FRAMES * 2);
+    fake_set_pools(81 * MB, 105 * MB, 26 * MB);
+    uint32_t before = evicted_count;
+
+    fake_set_pools(81 * MB, 105 * MB, 3 * MB); // the player has phycont
+    frames(600);
+    assert(evicted_count == before &&
+           "the movie's phycont use was read as this cache's pools running dry");
+    printf("movie        : phycont at 3 MB of 26 for 600 ticks, %u evicted  OK\n",
+           evicted_count - before);
+
+    // And the pool that does mean something still does, or this test passes by
+    // having broken reclaiming altogether.
+    // Long enough to cover the sampling interval: a pool this far clear of its
+    // mark is only asked about once every fifteen frames, which is the whole
+    // point of the interval.
+    fake_set_pools(81 * MB, 10 * MB, 26 * MB);
+    frames(TEXTURE_POOL_SAMPLE_FRAMES * 2);
+    assert(evicted_count > before && "a real shortage must still be reclaimed");
+    printf("             : ram at 10 MB of 105, %u evicted  OK\n",
+           evicted_count - before);
+  }
+
+  // A copy has to fit the buffer it goes back into, not match it.
+  //
+  // vglMallocUsableSize answers for the block a pointer landed in, and which
+  // block that is depends on where there was room: a texture allocated out of
+  // an on-demand phycont block reports its mapped size, rounded up to a
+  // megabyte, where the same texture out of the RAM mspace reports close to
+  // what was asked for. Demanding the two agree retires every texture that
+  // comes back into a different kind of memory than it left.
+  {
+    harness_start_empty(192 * MB);
+    GLuint id = tex_upload(0x510C0001u, 512, 512, TEX_BYTES);
+    drain();
+    frames(TEXTURE_IDLE_FRAMES * 2);
+    glBindTextureHook(GL_TEXTURE_2D, 0); // so it is not the bound texture
+    evict_texture(id);
+    assert(textures[id].evicted && "the copy could not be taken");
+
+    uint32_t failed_before = restore_failed_count;
+    fake_next_usable_bonus = 512 * 1024; // it comes back in a roomier block
+    glBindTextureHook(GL_TEXTURE_2D, id);
+    assert(!textures[id].evicted && "a buffer with room to spare was refused");
+    assert(restore_failed_count == failed_before && "and the texture written off");
+    assert(fake_sampled(id) == fake_fingerprint_of(0x510C0001u) &&
+           "it came back as something else");
+    assert(!fake_first_overrun() && "the restore wrote past the buffer");
+    printf("slack        : restored into a buffer %d KB larger than the copy  OK\n", 512);
+  }
+
+  // A copy that genuinely will not fit is refused -- and taken off the card
+  // with it. Left there, store_has tells the next eviction the store already
+  // holds this texture, the pixels are freed without writing, and the restore
+  // meets a record it has already refused once. For the rest of the session,
+  // and for every session after it, because nothing ever rewrites the file.
+  {
+    harness_start_empty(192 * MB);
+    fake_heap_used = (size_t)MEMORY_NEWLIB_MB * MB; // no heap tier: it goes to the card
+    // Captured out of a block worth more than the texture needs, which is what
+    // a phycont-resident texture looks like: the record is written for the
+    // whole block, and no ordinary buffer will ever be that size.
+    fake_next_usable_bonus = 64 * 1024;
+    GLuint id = tex_upload(0xB16B0001u, 512, 512, TEX_BYTES);
+    drain();
+    frames(TEXTURE_IDLE_FRAMES * 2);
+    glBindTextureHook(GL_TEXTURE_2D, 0);
+    card_writes_allowed = 1;
+    evict_texture(id);
+    assert(textures[id].evicted && "the copy could not be taken");
+    assert(textures[id].backup_bytes == TEX_BYTES + 64 * 1024 &&
+           "the record has to carry the block's size, not the texture's");
+    unsigned files = fake_store_files();
+    assert(files > 0 && "the copy had to reach the card for this");
+
+    uint32_t failed_before = restore_failed_count;
+    glBindTextureHook(GL_TEXTURE_2D, id); // replayed into an ordinary buffer
+    assert(textures[id].unbacked && "a copy that does not fit has to be refused");
+    assert(restore_failed_count == failed_before + 1 && "and counted, once");
+    assert(fake_store_files() == files - 1 &&
+           "the copy that will not fit is still on the card");
+    assert(store_files == fake_store_files() &&
+           "the index still claims a file the card does not have");
+    assert(!fake_first_overrun() && "the refused restore wrote past the buffer");
+    fake_heap_used = 0;
+    printf("misfit       : a copy too big for the buffer is refused and dropped  OK\n");
+  }
+
   // vglGetTexDataPointer returning NULL means the pools are full right now --
   // which is precisely when the cache is working hardest to empty them, so it
   // is also when a second attempt is most likely to work. Treating it as "this
@@ -685,10 +798,18 @@ int main(void) {
     // every bind of that texture for the rest of the session.
     GLuint gone = tex_upload(0xDEAD0000u, 512, 512, TEX_BYTES);
     drain();
+    // The card path, explicitly: the heap tier taken away and card writes
+    // opened. This used to rely on an earlier block having left the heap full,
+    // and a copy that quietly goes to the heap instead leaves no file to delete
+    // and a test that proves nothing. Set before the ticks, because whether the
+    // heap is tight is decided once a tick and not per eviction.
+    size_t heap_was = fake_heap_used;
+    fake_heap_used = (size_t)MEMORY_NEWLIB_MB * MB;
     frames(TEXTURE_IDLE_FRAMES * 4);
     card_writes_allowed = 1;
-    textures[gone].ram_copy = NULL; // force the card path rather than the heap
+    textures[gone].ram_copy = NULL;
     assert(backup_capture(&textures[gone], gone) == 1);
+    fake_heap_used = heap_was;
     evict_texture(gone);
     assert(fake_wipe_store() > 0 && "the harness had a file to delete");
 
@@ -701,6 +822,19 @@ int main(void) {
            "a missing file must not be retried as a shortage");
     assert(textures[gone].unbacked && "and the texture must be retired");
     printf("file gone    : a missing copy is permanent, not retried  OK\n");
+
+    // And it is one lost texture, however many times the game goes on drawing
+    // it. Counting the binds instead turned seventeen dead textures into
+    // 112888 failures in a trace, which reads as a cache coming apart rather
+    // than as a handful of textures that never came back.
+    failed_before = restore_failed_count;
+    for (int i = 0; i < 200; i++) {
+      glBindTextureHook(GL_TEXTURE_2D, gone);
+      tick();
+    }
+    assert(restore_failed_count == failed_before &&
+           "every bind of a dead texture was counted as another failure");
+    printf("             : 200 more binds of it counted 0 more  OK\n");
   }
 
   // Idle has to be time, not ticks.

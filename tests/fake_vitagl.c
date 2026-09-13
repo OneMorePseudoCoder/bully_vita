@@ -37,6 +37,13 @@ size_t fake_pool_start[FAKE_POOLS];
 static size_t fake_slot_take[FAKE_SLOTS][FAKE_POOLS];
 size_t fake_low_water;
 int fake_reject_next_upload;
+// What vglMallocUsableSize answers for each slot, which is not the same
+// question as how big the texture is. On the console it is whatever the block
+// the pointer landed in is worth: an on-demand phycont block reports its mapped
+// size, rounded up to a megabyte, where the RAM mspace reports close to what
+// was asked for. The buffer really is that big, so this is slack, not a lie.
+size_t fake_slot_usable[FAKE_SLOTS];
+size_t fake_next_usable_bonus;
 
 void fake_reset(size_t free_memory) {
   memset(fake_slot_bytes, 0, sizeof(fake_slot_bytes));
@@ -55,6 +62,8 @@ void fake_reset(size_t free_memory) {
   memcpy(fake_pool_start, fake_pool_free, sizeof(fake_pool_start));
   fake_low_water = free_memory;
   fake_reject_next_upload = 0;
+  memset(fake_slot_usable, 0, sizeof(fake_slot_usable));
+  fake_next_usable_bonus = 0;
 }
 
 void fake_set_pools(size_t cdram, size_t ram, size_t phycont) {
@@ -128,6 +137,8 @@ static void set_slot(GLuint id, size_t size, uint32_t content) {
   free(fake_slot_data[id]);
   fake_slot_data[id] = NULL;
   fake_slot_bytes[id] = size;
+  fake_slot_usable[id] = size ? size + fake_next_usable_bonus : 0;
+  fake_next_usable_bonus = 0; // one allocation's worth, like landing in a pool
   assert(fake_free_memory >= size && "driver ran out of memory: this is the crash being fixed");
   fake_free_memory -= size;
   // CDRAM first, then RAM, then whatever is left -- vitaGL's own order.
@@ -224,14 +235,14 @@ void *vglGetTexDataPointer(GLenum target) {
     // A guard past the end, so that anything copying by a size other than the
     // one this buffer was made with is caught rather than quietly scribbling
     // on the next allocation the way it would on the console.
-    fake_slot_data[fake_bound] = malloc(fake_slot_bytes[fake_bound] + FAKE_CANARY);
+    fake_slot_data[fake_bound] = malloc(fake_slot_usable[fake_bound] + FAKE_CANARY);
     if (fake_slot_data[fake_bound])
-      memset((char *)fake_slot_data[fake_bound] + fake_slot_bytes[fake_bound],
+      memset((char *)fake_slot_data[fake_bound] + fake_slot_usable[fake_bound],
              FAKE_CANARY_BYTE, FAKE_CANARY);
     // Fill with the slot's content marker so a round trip through the cache is
     // checkable: what comes back must be what went in.
     if (fake_slot_data[fake_bound]) {
-      memset(fake_slot_data[fake_bound], 0, fake_slot_bytes[fake_bound]);
+      memset(fake_slot_data[fake_bound], 0, fake_slot_usable[fake_bound]);
       if (fake_slot_bytes[fake_bound] >= sizeof(uint32_t))
         *(uint32_t *)fake_slot_data[fake_bound] = fake_slot_content[fake_bound];
     }
@@ -247,7 +258,7 @@ size_t vglMallocUsableSize(void *ptr) {
     return 0;
   for (int i = 0; i < FAKE_SLOTS; i++)
     if (fake_slot_data[i] == ptr)
-      return fake_slot_bytes[i];
+      return fake_slot_usable[i];
   return 0;
 }
 
@@ -265,7 +276,7 @@ GLuint fake_first_overrun(void) {
   for (GLuint id = 0; id < FAKE_SLOTS; id++) {
     if (!fake_slot_data[id] || !fake_slot_bytes[id])
       continue;
-    const unsigned char *guard = (const unsigned char *)fake_slot_data[id] + fake_slot_bytes[id];
+    const unsigned char *guard = (const unsigned char *)fake_slot_data[id] + fake_slot_usable[id];
     for (int i = 0; i < FAKE_CANARY; i++)
       if (guard[i] != FAKE_CANARY_BYTE)
         return id ? id : 1;

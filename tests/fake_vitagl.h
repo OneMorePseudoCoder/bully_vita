@@ -25,6 +25,14 @@ extern void *fake_slot_data[FAKE_SLOTS];
 // The real allocation behind a vglGetTexDataPointer result.
 size_t vglMallocUsableSize(void *ptr);
 
+// Slack the allocator hands out over what was asked for. Set it before an
+// upload to make that texture's buffer report more usable bytes than the
+// texture needs, the way one allocated out of an on-demand phycont block does:
+// vglMallocUsableSize answers with the block's mapped size, rounded up to a
+// megabyte. The buffer really is that big; nothing here is pretending.
+extern size_t fake_slot_usable[FAKE_SLOTS];
+extern size_t fake_next_usable_bonus;
+
 // How vitaGL itself sizes a pixel, which is not always what the loader's budget
 // estimate says.
 size_t fake_bpp(GLint internalformat, GLenum type);

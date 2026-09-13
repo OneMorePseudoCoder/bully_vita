@@ -190,6 +190,10 @@ void movie_draw_frame(void) {
     sceAvPlayerClose(movie_player);
     movie_audio_shutdown();
     player_state = PLAYER_INACTIVE;
+    traceLog("movie: finished, vgl free ram %d cdram %d phycont %d MB\n",
+             (int)(vglMemFree(VGL_MEM_RAM) / (1024 * 1024)),
+             (int)(vglMemFree(VGL_MEM_VRAM) / (1024 * 1024)),
+             (int)(vglMemFree(VGL_MEM_PHYCONT) / (1024 * 1024)));
     glClear(GL_COLOR_BUFFER_BIT);
     vglSwapBuffers(GL_FALSE);
   }
@@ -281,6 +285,19 @@ int OS_MoviePlay(const char *file, int a2, int a3, float a4) {
   sceKernelStartThread(audio_thid, 0, NULL);
 
   player_state = PLAYER_ACTIVE;
+
+  // What the pools read on the way in and, below, on the way out.
+  //
+  // The player takes its frame buffers from phycont, and with PHYCONT_ON_DEMAND
+  // vglMemFree(PHYCONT) is not a vitaGL pool but the kernel's answer for the
+  // whole process. It goes from 26 MB to about 3 while a movie plays. The
+  // texture cache used to read that as its own pools running dry and empty
+  // itself; it no longer watches that pool, and these two lines are how anyone
+  // reading a log can see the dip for what it is rather than inferring it.
+  traceLog("movie: playing %s, vgl free ram %d cdram %d phycont %d MB\n", file,
+           (int)(vglMemFree(VGL_MEM_RAM) / (1024 * 1024)),
+           (int)(vglMemFree(VGL_MEM_VRAM) / (1024 * 1024)),
+           (int)(vglMemFree(VGL_MEM_PHYCONT) / (1024 * 1024)));
 
   return 0;
 }

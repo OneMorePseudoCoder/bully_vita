@@ -54,6 +54,33 @@
 // and always reads 0.
 #define VGL_POOLS 3
 
+// The one pool a shortage can honestly be read off. All three are sampled and
+// logged; only this one is allowed to start an eviction.
+//
+// Pool 0 is CDRAM. vitaGL allocates from it first and falls back to RAM, so
+// CDRAM at zero with RAM free is the allocator doing its job, not a shortage --
+// and reclaiming against it evicted continuously through every area load for no
+// gain at all.
+//
+// Pool 2 is phycont, and it is not a vitaGL pool at all in this build. With
+// PHYCONT_ON_DEMAND -- which the movie player needs -- vglMemFree(PHYCONT) asks
+// the kernel how much physically contiguous memory the whole process has left.
+// SceAvPlayer takes 23 of the 26 MB for as long as the intro movie is playing.
+//
+// The tick runs during the movie: it is called from ProcessEvents, and the
+// movie draws and swaps from there too. So every session began with this
+// reading at 3 MB against a 3.9 MB low mark, and the cache dutifully evicted
+// every texture the game had uploaded and was not drawing at that instant --
+// the menu font, the HUD, the first street. Nineteen of them, at the same
+// point, in three sessions running, and the game never asked for most of them
+// again in a way that put them back. That is the missing text and the black
+// ground, and it is not a memory problem: the heap peaked at 110 MB of 176.
+//
+// Nothing is lost by not watching it. vitaGL only reaches for phycont after
+// CDRAM and RAM have both refused, so RAM running out is the earlier signal and
+// this is the one below.
+#define VGL_POOL_WATCHED 1
+
 // Stamped into every record so a torn write, or a record left over from an
 // upload the game has since replaced, can never be replayed into a texture.
 // Bumped when the store became persistent and its files became content-named:
@@ -222,13 +249,9 @@ static unsigned pool_sample_interval(void) {
   if (!pool_start[1] || reclaiming)
     return 1;
 
-  size_t margin = (size_t)-1;
-  for (int pool = 1; pool < VGL_POOLS; pool++) {
-    size_t low = pool_start[pool] / 100 * TEXTURE_FREE_HEADROOM_LOW_PERCENT;
-    size_t clear = free_now[pool] > low ? free_now[pool] - low : 0;
-    if (clear < margin)
-      margin = clear;
-  }
+  size_t low = pool_start[VGL_POOL_WATCHED] / 100 * TEXTURE_FREE_HEADROOM_LOW_PERCENT;
+  size_t margin =
+      free_now[VGL_POOL_WATCHED] > low ? free_now[VGL_POOL_WATCHED] - low : 0;
 
   unsigned frames = (unsigned)(margin / (TEXTURE_POOL_MB_PER_FRAME * 1024 * 1024));
   if (frames < 1)
@@ -1060,8 +1083,12 @@ static int restore_texture(GLuint id) {
   // back into the scratch buffer.
   const uint8_t *saved = info->ram_copy;
   uint32_t saved_bytes = info->backup_bytes;
+  // Only set on the card path, and kept until the end of the function: a copy
+  // that turns out not to fit has to be taken off the card, and by then the
+  // block that built the name is long out of scope.
+  char path[160];
+  path[0] = 0;
   if (!saved) {
-    char path[160];
     // resident_size, not backup_bytes: this has to rebuild the same name
     // backup_capture wrote, and that one is chosen before the texture is bound.
     texture_path(path, sizeof(path), info->key, info->resident_size);
@@ -1075,8 +1102,14 @@ static int restore_texture(GLuint id) {
     SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
     uint32_t t_opened = upload_now_us();
     restore_open_us += t_opened - t_open;
-    if (fd < 0)
-      return RESTORE_GONE; // the file is not there; nothing will bring it back
+    if (fd < 0) {
+      // The index said it was there. It is not, and no amount of asking again
+      // will change that.
+      traceLog("texture restore: no file for %u, key %08x%08x (%u bytes)\n", id,
+               (unsigned)(info->key >> 32), (unsigned)info->key,
+               (unsigned)info->resident_size);
+      return RESTORE_GONE;
+    }
     BackupRecord record;
     memset(&record, 0, sizeof(record));
     int header = sceIoRead(fd, &record, sizeof(record));
@@ -1109,6 +1142,10 @@ static int restore_texture(GLuint id) {
       // the next one writes a good one.
       sceIoRemove(path);
       store_forget(info->key);
+      traceLog("texture restore: %u would not read back, key %08x%08x, "
+               "%d of %u bytes -- file dropped\n",
+               id, (unsigned)(info->key >> 32), (unsigned)info->key, got,
+               (unsigned)record.bytes);
       return RESTORE_GONE;
     }
     saved = restore_scratch;
@@ -1152,13 +1189,40 @@ static int restore_texture(GLuint id) {
     install_placeholder(id);
     return RESTORE_NOT_NOW;
   }
-  // The buffer vitaGL has just handed back has to be the size the one we read
-  // out of was, or this copy runs off the end of it. They are allocated from
-  // the same request for the same shape, so a disagreement means the texture is
-  // not what was saved -- refuse rather than write past it.
-  if ((uint32_t)vglMallocUsableSize(pixels) != saved_bytes) {
-    // A real mismatch, not a shortage: what came back is not the shape that was
-    // saved, so the saved bytes are no use to this texture and never will be.
+  // The buffer vitaGL has just handed back has to be big enough to hold what we
+  // read out, or this copy runs off the end of it.
+  //
+  // Big enough, not equal. It used to demand equality, and equality is not the
+  // allocator's promise. vglMallocUsableSize answers with whatever the block a
+  // pointer landed in is worth, and that depends on where it landed: a texture
+  // allocated out of an on-demand phycont block reports its mapped size, which
+  // is rounded up to a megabyte, and the same texture allocated out of the RAM
+  // mspace reports what it asked for. So a texture saved from one pool and
+  // replayed into another disagreed by construction and was retired as
+  // corrupt -- and because the file stayed on the card and stayed indexed, the
+  // next eviction was told the store already had it, freed the pixels without
+  // writing, and the restore failed again. Every session. Which is the shape of
+  // what happened here: the three textures this run took from the previous
+  // run's store were dead from the first bind.
+  //
+  // What actually protects the copy is the record: the key over the pixels, the
+  // verify hash over the gaps the key steps over, and the checksum over all of
+  // it, with the shape replayed from the levels the game itself uploaded. None
+  // of that needs the two allocations to have identical slack.
+  uint32_t usable = (uint32_t)vglMallocUsableSize(pixels);
+  if (usable < saved_bytes) {
+    // Genuinely too small: whatever this buffer is, it is not the texture that
+    // was saved, and writing the saved bytes into it would go past the end.
+    // Take the file with it, the way a bad record is taken -- a copy that does
+    // not fit is not going to start fitting, and left indexed it poisons every
+    // eviction of this texture from now on.
+    if (path[0]) {
+      sceIoRemove(path);
+      store_forget(info->key);
+    }
+    traceLog("texture restore: %u came back %u bytes for a %u byte copy "
+             "(%s) -- copy dropped\n",
+             id, usable, saved_bytes, path[0] ? "card" : "heap");
     backup_release(info);
     install_placeholder(id);
     return RESTORE_GONE;
@@ -1392,12 +1456,13 @@ void texture_cache_tick(void) {
     // Logged once, because every later judgement is made against these and a
     // trace that does not say what the thresholds were cannot be read.
     traceLog("texture cache: pools at start cdram %d ram %d phycont %d MB, "
-             "reclaiming below %d / %d / %d MB\n",
+             "reclaiming when ram drops below %d MB and until it is back over %d\n",
              (int)(pool_start[0] / (1024 * 1024)), (int)(pool_start[1] / (1024 * 1024)),
              (int)(pool_start[2] / (1024 * 1024)),
-             (int)(pool_start[0] / 100 * TEXTURE_FREE_HEADROOM_PERCENT / (1024 * 1024)),
-             (int)(pool_start[1] / 100 * TEXTURE_FREE_HEADROOM_PERCENT / (1024 * 1024)),
-             (int)(pool_start[2] / 100 * TEXTURE_FREE_HEADROOM_PERCENT / (1024 * 1024)));
+             (int)(pool_start[VGL_POOL_WATCHED] / 100 * TEXTURE_FREE_HEADROOM_LOW_PERCENT /
+                   (1024 * 1024)),
+             (int)(pool_start[VGL_POOL_WATCHED] / 100 * TEXTURE_FREE_HEADROOM_PERCENT /
+                   (1024 * 1024)));
   }
 
   // How far below its share any pool has fallen, added up. A pool is judged
@@ -1424,22 +1489,35 @@ void texture_cache_tick(void) {
   // it is back above the high one. In between, leave it alone. The work happens
   // in bursts with real margin either side rather than as a permanent trickle,
   // and a pool that simply sits a little under its ideal is left to sit there.
-  size_t deficit = 0;
-  int below_low = 0;
-  for (int pool = 1; pool < VGL_POOLS; pool++) {
-    size_t high = pool_start[pool] / 100 * TEXTURE_FREE_HEADROOM_PERCENT;
-    size_t low = pool_start[pool] / 100 * TEXTURE_FREE_HEADROOM_LOW_PERCENT;
-    if (free_now[pool] < low)
-      below_low = 1;
-    if (free_now[pool] < high)
-      deficit += high - free_now[pool];
-  }
-  if (below_low)
+  const size_t high = pool_start[VGL_POOL_WATCHED] / 100 * TEXTURE_FREE_HEADROOM_PERCENT;
+  const size_t low = pool_start[VGL_POOL_WATCHED] / 100 * TEXTURE_FREE_HEADROOM_LOW_PERCENT;
+  const size_t free_watched = free_now[VGL_POOL_WATCHED];
+  size_t deficit = free_watched < high ? high - free_watched : 0;
+  int was_reclaiming = reclaiming;
+  if (free_watched < low)
     reclaiming = 1;
   else if (!deficit)
-    reclaiming = 0; // back above the high mark everywhere: done until next time
+    reclaiming = 0; // back above the high mark: done until next time
   if (!reclaiming)
     deficit = 0;
+
+  // Say when a burst starts and what it cost, because a burst is the only thing
+  // here that takes textures off the screen and the trace had no way to tie one
+  // to the reading that caused it. Two lines per burst, and bursts are rare by
+  // construction -- that is what the two marks are for.
+  static uint32_t reclaim_opening_ev;
+  if (reclaiming != was_reclaiming) {
+    if (reclaiming) {
+      reclaim_opening_ev = evicted_count;
+      traceLog("texture cache: reclaiming, ram %d MB free (low %d, aiming %d), "
+               "holding %d MB\n",
+               (int)(free_watched / (1024 * 1024)), (int)(low / (1024 * 1024)),
+               (int)(high / (1024 * 1024)), (int)(tracked_bytes / (1024 * 1024)));
+    } else {
+      traceLog("texture cache: settled, ram %d MB free, %u evicted in that burst\n",
+               (int)(free_watched / (1024 * 1024)), evicted_count - reclaim_opening_ev);
+    }
+  }
 
   if (tracked_bytes <= budget && deficit == 0) {
     starved_frames = 0;
@@ -1558,8 +1636,17 @@ void glBindTextureHook(GLenum target, GLuint texture) {
     if (got == RESTORE_OK) {
       restored_count++;
     } else if (got == RESTORE_GONE) {
+      // Once per texture, not once per bind.
+      //
+      // A retired texture is still bound and drawn every frame it appears in,
+      // and each of those binds came back through here and counted again: a
+      // session with seventeen dead textures reported 112888 failures, which
+      // reads as a cache falling apart rather than as a handful of textures
+      // that never came back. What is worth counting is how many textures were
+      // lost. How often they are drawn is what the screen is for.
+      if (!info->unbacked)
+        restore_failed_count++;
       info->unbacked = 1; // nothing we can do; stop pretending it is reloadable
-      restore_failed_count++;
     } else {
       // No memory for it this frame. The copy is still held and the texture is
       // still evicted, so the next bind asks again -- by which time the
@@ -1750,7 +1837,7 @@ void texture_cache_stats(TextureCacheStats *out) {
   out->parked_mb = (int)(ram_cache_bytes / (1024 * 1024));
   out->evicted = (int)evicted_count;
   out->restored = (int)restored_count;
-  out->failed = (int)restore_failed_count;
+  out->failed = (int)restore_failed_count; // textures lost, not binds of them
   out->spilled = (int)card_evicted_count;
   out->reused = (int)store_reused;
   // Scaled back up from the sample, so these read as whole-session totals.
