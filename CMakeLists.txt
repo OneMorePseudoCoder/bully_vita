@@ -22,6 +22,17 @@ set(VITA_MKSFOEX_FLAGS "-d ATTRIBUTE2=12 -s CONTENT_ID=HB0001-${VITA_TITLEID}_00
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -Wl,-q,--wrap,memcpy,--wrap,memmove,--wrap,memset -D_GNU_SOURCE -Wall -O3 -mfloat-abi=softfp")
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++11")
 
+# Regenerated on every build, so the banner in the log names the commit that
+# produced the binary rather than whenever main.c was last recompiled.
+add_custom_target(build_id ALL
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}
+                           -DOUT=${CMAKE_BINARY_DIR}/build_id.h
+                           -P ${CMAKE_SOURCE_DIR}/cmake/build_id.cmake
+  BYPRODUCTS ${CMAKE_BINARY_DIR}/build_id.h
+  COMMENT "Stamping the build id"
+)
+include_directories(${CMAKE_BINARY_DIR})
+
 add_executable(Bully
   loader/main.c
   loader/streaming_patch.c
@@ -72,6 +83,8 @@ target_link_libraries(Bully
   SceTouch_stub
   SceVshBridge_stub
 )
+
+add_dependencies(Bully build_id)
 
 vita_create_self(eboot.bin Bully UNSAFE)
 vita_create_vpk(Bully.vpk ${VITA_TITLEID} eboot.bin

@@ -42,6 +42,7 @@
 #include <sys/stat.h>
 
 #include "main.h"
+#include "build_id.h"
 #include "config.h"
 #include "dialog.h"
 #include "fios.h"
@@ -942,8 +943,8 @@ int main(int argc, char *argv[]) {
   // First line in the log, before anything can fail. Two sessions have now been
   // spent disagreeing about which build produced a log, because nothing in it
   // said. The compiler's own timestamp cannot be wrong about that.
-  traceLog("---- Bully loader built %s %s, store format %d ----\n",
-           __DATE__, __TIME__, BACKUP_FORMAT);
+  traceLog("---- Bully loader %s, store format %d ----\n", LOADER_BUILD_ID,
+           BACKUP_FORMAT);
 
   capunlocker_enabled = check_capunlocker() >= 0;
   if (capunlocker_enabled) {
