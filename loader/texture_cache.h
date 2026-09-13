@@ -77,6 +77,7 @@ typedef struct {
   int starved; // frames it failed to get back under its limits
   int deferred; // evictions it wanted to make and could not, for want of a copy
   int restore_deferred; // restores that found no memory and will be asked again
+  int subimage_dropped; // writes lost because the texture would not come back
   int blocked; // consecutive frames it has wanted to free memory and freed none
 } TextureCacheStats;
 

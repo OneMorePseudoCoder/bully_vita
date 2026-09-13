@@ -33,7 +33,7 @@ int main(void) {
     live[at] = tex_upload(0x10000000u + frame, 256, 256, TEX_BYTES);
     at = (at + 1) % LIVE_TEXTURES;
     drain();
-    texture_cache_tick();
+    tick();
 
     if (frame % 8000 == 0)
       printf("  frame %5d: %zu MB tracked, %zu MB free\n", frame, tracked_bytes / MB,
@@ -56,7 +56,7 @@ int main(void) {
   GLuint hot = tex_upload(0x40000001u, 256, 256, TEX_BYTES);
   for (int i = 0; i < 2000; i++) {
     glBindTextureHook(GL_TEXTURE_2D, hot);
-    texture_cache_tick();
+    tick();
   }
   assert(!textures[hot].evicted && "a texture in constant use must not be evicted");
 

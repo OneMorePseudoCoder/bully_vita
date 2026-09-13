@@ -54,7 +54,7 @@ int main(void) {
   int uploaded = 0;
   while (tracked_bytes < budget + budget / 4) {
     tex_upload(0x2000u + uploaded, 512, 512, TEX_BYTES);
-    texture_cache_tick();
+    tick();
     uploaded++;
   }
   frames(TEXTURE_IDLE_FRAMES + 260);
@@ -70,7 +70,7 @@ int main(void) {
   // cache must not drop.
   for (int i = 0; i < 300; i++) {
     tex_upload(0x3000u + uploaded, 512, 512, TEX_BYTES);
-    texture_cache_tick();
+    tick();
     uploaded++;
   }
   frames(TEXTURE_IDLE_FRAMES + 460);

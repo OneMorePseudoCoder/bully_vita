@@ -155,7 +155,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       tex_upload(0xDE000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
     unsigned spilled = fake_store_files();
@@ -171,7 +171,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       ids[i] = tex_upload(0xDE000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
     printf("store reuse  : %u spilled, %u evictions free on the next run, %u written  OK\n",
@@ -195,7 +195,7 @@ int main(void) {
       assert(fake_sampled(ids[i]) == fake_fingerprint_of(0xDE000000u + (unsigned)i) &&
              "a texture restored from a previous run's file must be the right one");
       checked++;
-      texture_cache_tick();
+      tick();
     }
     assert(checked > 0 && "something had to have been evicted to check this");
     printf("             : %d restored from files written before the restart  OK\n", checked);
@@ -212,7 +212,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       tex_upload(0xAB000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
     unsigned first = fake_store_files();
@@ -225,7 +225,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       ids[i] = tex_upload(0xCD000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
     printf("key discrim  : %u stored, %u reused, %u written for different pixels  OK\n", first,
@@ -241,7 +241,7 @@ int main(void) {
       assert(fake_sampled(ids[i]) == fake_fingerprint_of(0xCD000000u + (unsigned)i) &&
              "and each must restore as itself, not as the texture it displaced");
       checked++;
-      texture_cache_tick();
+      tick();
     }
     assert(checked > 0 && "something had to have been evicted to check this");
   }
@@ -254,7 +254,7 @@ int main(void) {
   {
     harness_start_empty(0);
     fake_set_pools(81 * MB, 100 * MB, 26 * MB);
-    texture_cache_tick(); // takes the starting figures
+    tick(); // takes the starting figures
     assert(pool_start[1] == 100 * MB);
 
     // Enough resident to have something to evict, and idle enough to qualify.
@@ -340,7 +340,7 @@ int main(void) {
     assert((size_t)count * TEX_BYTES > 81 * MB && "must be more than CDRAM holds");
     for (int i = 0; i < count; i++) {
       tex_upload(0xC1000000u + i, 512, 512, TEX_BYTES);
-      texture_cache_tick();
+      tick();
     }
     wander(hot, 64, TEXTURE_IDLE_FRAMES * 3);
     int gone = 0;
@@ -379,7 +379,7 @@ int main(void) {
     // would ever happen if the fixed threshold were the only way out.
     for (int i = 0; i < 4000 && fake_pool_free[1] > fake_pool_start[1] / 100 * 15; i++) {
       tex_upload(0xB1000000u + i, 512, 512, TEX_BYTES);
-      texture_cache_tick();
+      tick();
     }
     assert(fake_pool_free[1] <= fake_pool_start[1] / 100 * 15 && "failed to wedge the pool");
     uint32_t spilled_before = card_evicted_count;
@@ -405,7 +405,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       tex_upload(0x7C000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
     unsigned written = fake_store_files();
@@ -436,7 +436,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       ids[i] = tex_upload_narrow(0x5E000000u + (unsigned)i, 512, 512);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
 
@@ -455,7 +455,7 @@ int main(void) {
       assert(fake_sampled(ids[i]) == fake_fingerprint_of(0x5E000000u + (unsigned)i) &&
              "a narrow-format texture must come back as itself");
       checked++;
-      texture_cache_tick();
+      tick();
     }
     assert(checked > 0);
     assert(!fake_first_overrun() && "restoring wrote past a texture buffer");
@@ -484,7 +484,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       ids[i] = tex_upload(0x33000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
     assert(fake_store_files() > 0 && "this block needs a file on the card");
@@ -499,7 +499,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       ids[i] = tex_upload(0x33000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
 
@@ -515,7 +515,7 @@ int main(void) {
       for (int j = 0; j < count; j++)
         if (j != i && got == fake_fingerprint_of(0x33000000u + (unsigned)j))
           wrong++;
-      texture_cache_tick();
+      tick();
     }
     assert(looked > 0 && "nothing was evicted, so nothing was checked");
     assert(wrong == 0 && "a texture was restored as a different texture");
@@ -601,7 +601,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       tex_upload(0x9F000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
     unsigned written = fake_store_files();
@@ -627,7 +627,7 @@ int main(void) {
     for (int i = 0; i < count; i++) {
       tex_upload(0xA7000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
     unsigned again = fake_store_files();
@@ -701,6 +701,86 @@ int main(void) {
            "a missing file must not be retried as a shortage");
     assert(textures[gone].unbacked && "and the texture must be retired");
     printf("file gone    : a missing copy is permanent, not retried  OK\n");
+  }
+
+  // Idle has to be time, not ticks.
+  //
+  // frame_counter advances once per ProcessEvents call, and a real session ran
+  // those from 1 to 718 a second -- a menu spins through them while drawing
+  // almost nothing. Measured in ticks, the same threshold of 150 meant 5.8
+  // seconds in a busy street and 0.21 seconds in a menu, so a font atlas that
+  // went one line of dialogue without being drawn was evicted, and the text
+  // stopped appearing. Seven hundred times the intended policy, decided by
+  // where the player happened to be standing.
+  {
+    harness_start_empty(192 * MB);
+    GLuint id = tex_upload(0x7EA70000u, 512, 512, TEX_BYTES);
+    drain();
+    glBindTextureHook(GL_TEXTURE_2D, id);
+    tick();
+    // Bind something else afterwards. A texture still bound to a unit is never
+    // a candidate whatever the policy says -- it could be drawn again without
+    // the game rebinding it -- so leaving it bound would make this pass for a
+    // reason that has nothing to do with time.
+    GLuint other = tex_upload(0x7EA70001u, 64, 64, 32 * 1024);
+    drain();
+    glBindTextureHook(GL_TEXTURE_2D, other);
+
+    // A menu: 718 ticks a second, so 1393 us each. Run well past the old
+    // threshold of 150 ticks -- but nothing like the idle period in real time.
+    uint32_t started_ms = now_ms;
+    for (int i = 0; i < 600; i++)
+      tick_us(1393);
+    assert(now_ms - started_ms < TEXTURE_IDLE_MS &&
+           "the test has to stay inside the idle window in real time");
+
+    // Squeeze hard enough that it would take anything it is allowed to take,
+    // with both tiers open so that a texture it decides to evict actually goes.
+    // Otherwise the eviction is merely deferred, the texture stays resident for
+    // a reason that has nothing to do with idle-ness, and the test passes
+    // whatever the policy is.
+    card_writes_allowed = 1;
+    fake_set_pools(2 * MB, 2 * MB, 2 * MB);
+    // More ticks than the pool re-sample interval, or the cache is still
+    // looking at the healthy figures it read before the squeeze and sees no
+    // shortage to act on -- which would make this pass without the policy ever
+    // being consulted. Still well inside the idle window in real time.
+    frames(TEXTURE_POOL_SAMPLE_FRAMES + 5);
+    assert(!textures[id].evicted &&
+           "a texture drawn a fraction of a second ago was evicted");
+    printf("idle is time : 600 ticks in %u ms did not make a texture stale  OK\n",
+           now_ms - started_ms);
+  }
+
+  // The game must never write into the placeholder.
+  //
+  // An evicted texture is a 1x1 stand-in. A glyph written into that with
+  // glTexSubImage2D goes nowhere, and the restore afterwards puts the older
+  // copy back over the top, so the glyph is simply gone. A font atlas the game
+  // fills in one glyph at a time loses every one written while it was evicted,
+  // which on screen is a menu with its border and its flourishes and no words.
+  {
+    harness_start_empty(192 * MB);
+    GLuint id = tex_upload(0xF0417000u, 512, 512, TEX_BYTES);
+    drain();
+    frames(TEXTURE_IDLE_FRAMES * 4);
+    assert(backup_capture(&textures[id], id) == 1);
+    evict_texture(id);
+    assert(textures[id].evicted && "it has to be evicted for this to mean anything");
+
+    // The game writes a glyph into what it believes is the atlas.
+    glBindTextureHook(GL_TEXTURE_2D, id);
+    fill_source(0x9A9A9A9Au, TEX_BYTES);
+    glTexSubImage2DHook(GL_TEXTURE_2D, 0, 0, 0, 64, 64, GL_RGBA,
+                        GL_UNSIGNED_BYTE, source_bytes);
+
+    assert(fake_last_subimage_slot_bytes > 4 &&
+           "the update was aimed at the 1x1 placeholder");
+    assert(!textures[id].evicted && "the texture was not brought back first");
+    assert(fake_sampled(id) == fake_fingerprint_of(0x9A9A9A9Au) &&
+           "the update did not survive");
+    assert(!fake_first_overrun() && "the update ran past a texture buffer");
+    printf("sub-image    : a write to an evicted texture brings it back first  OK\n");
   }
 
   printf("PASS\n");

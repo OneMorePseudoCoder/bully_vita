@@ -86,14 +86,39 @@ unsigned fake_store_writes(void);
 static void drain(void) {
 }
 
+// One simulated frame at thirty a second. Everything the cache decides about
+// idle-ness is in milliseconds, so a tick has to carry time with it.
+#define FRAME_US 33333
+void fake_advance_clock(uint64_t us);
+
+// How many simulated frames cover the idle window, so the tests below can go on
+// saying "several times the idle period" the way they always have.
+#define TEXTURE_IDLE_FRAMES ((int)((TEXTURE_IDLE_MS) * 1000 / FRAME_US) + 1)
+
+// A single simulated frame: time passes, then the cache gets its tick. Tests
+// must use this rather than calling texture_cache_tick directly, or the clock
+// stands still and the cache correctly concludes that nothing has been idle.
+static void tick(void) {
+  fake_advance_clock(FRAME_US);
+  texture_cache_tick();
+}
+
+// A tick with a chosen amount of time on it, for simulating a place where the
+// game calls ProcessEvents far more often than it draws.
+static void tick_us(uint64_t us) {
+  fake_advance_clock(us);
+  texture_cache_tick();
+}
+
 static void frames(int count) {
   for (int i = 0; i < count; i++)
-    texture_cache_tick();
+    tick();
 }
 
 // Walk around an area, drawing everything in it, for a number of frames.
 static void wander(const GLuint *ids, int count, int frame_count) {
   for (int f = 0; f < frame_count; f++) {
+    fake_advance_clock(FRAME_US);
     for (int i = 0; i < count; i++)
       glBindTextureHook(GL_TEXTURE_2D, ids[i]);
     texture_cache_tick();

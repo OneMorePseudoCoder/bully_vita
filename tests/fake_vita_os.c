@@ -360,9 +360,14 @@ struct mallinfo mallinfo(void) {
 // The upload path times itself on a sample of uploads, so the tests need a
 // clock. Wall time is fine: nothing asserts on the figures, they only have to
 // not be garbage.
+// A clock the test drives, not the host's. Idle-ness is measured in real time
+// now, so a test that ran its ticks in microseconds of wall clock would find
+// nothing idle and never evict -- and it would give a different answer on a
+// faster machine. fake_advance_clock is called once per simulated frame.
+uint64_t fake_clock_us;
+void fake_advance_clock(uint64_t us) { fake_clock_us += us; }
+
 int sceKernelGetProcessTime(SceKernelSysClock *clock) {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  *clock = (SceKernelSysClock)ts.tv_sec * 1000000ull + ts.tv_nsec / 1000;
+  *clock = (SceKernelSysClock)fake_clock_us;
   return 0;
 }

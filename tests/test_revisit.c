@@ -34,7 +34,7 @@ int main(void) {
   for (int i = 0; i < AREA; i++) {
     a[i] = tex_upload(tags[0] + i, 512, 512, TEX_BYTES);
     drain();
-    texture_cache_tick();
+    tick();
   }
   wander(a, AREA, 60);
   for (int i = 0; i < AREA; i++)
@@ -45,7 +45,7 @@ int main(void) {
     for (int i = 0; i < AREA; i++) {
       areas[area][i] = tex_upload(tags[area] + i, 512, 512, TEX_BYTES);
       drain();
-      texture_cache_tick();
+      tick();
     }
     wander(areas[area], AREA, 400);
   }

@@ -31,6 +31,9 @@ size_t fake_bpp(GLint internalformat, GLenum type);
 
 // 0 if every texture buffer's guard bytes are intact, else an overrun name.
 GLuint fake_first_overrun(void);
+
+// Size of the slot the last glTexSubImage2D was aimed at.
+extern size_t fake_last_subimage_slot_bytes;
 extern uint32_t fake_slot_content[FAKE_SLOTS];
 extern int fake_slot_alive[FAKE_SLOTS];
 extern GLuint fake_bound;

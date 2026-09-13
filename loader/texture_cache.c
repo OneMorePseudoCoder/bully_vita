@@ -86,7 +86,7 @@ typedef struct {
 typedef struct {
   uint32_t size; // bytes we believe vitaGL has allocated for this texture
   uint32_t resident_size; // what size will be again once it is restored
-  uint32_t last_frame; // frame counter at the time of the last bind
+  uint32_t last_drawn_ms; // when the game last bound it, in milliseconds
 
   // What this texture is, rather than where it happened to land. Folded from
   // the bytes the game uploaded plus the shape it uploaded them as, so the same
@@ -113,13 +113,25 @@ typedef struct {
 
 typedef struct {
   GLuint id;
-  uint32_t last_frame;
+  uint32_t last_drawn_ms;
 } EvictionCandidate;
 
 static TextureInfo textures[MAX_TEXTURES];
 static GLuint bound_textures[MAX_TEXTURE_UNITS];
 static int active_unit = 0;
 static uint32_t frame_counter = 1;
+// Milliseconds since the cache started, which is what "idle" is measured in.
+//
+// It used to be measured in ticks of frame_counter, and frame_counter counts
+// calls to ProcessEvents. A real session ran those at anywhere from 1 to 718 a
+// second: the same threshold of 150 meant five point eight seconds in a heavy
+// street and a fifth of a second in a menu. So in menus the cache evicted
+// anything not drawn for 200 ms, which is most of a font atlas between one
+// line of dialogue and the next -- and the text stopped appearing. The urgent
+// threshold worked out at forty milliseconds.
+//
+// A clock does not care how often it is called.
+static uint32_t now_ms;
 static size_t tracked_bytes = 0;
 // The highest texture name the game has actually used. The eviction pass walks
 // this array every frame it wants to reclaim, and walking all 16384 slots means
@@ -161,6 +173,9 @@ static uint32_t deferred_count;
 // that found nothing usable and never will be. Keeping them apart is the whole
 // point: the first is a shortage, the second is a texture that is gone.
 static uint32_t restore_deferred_count;
+// Sub-image updates dropped because the texture was a placeholder and would not
+// come back. Each one is a visible thing the game drew that is not there.
+static uint32_t subimage_dropped;
 
 
 // vglMemFree refuses VGL_MEM_ALL: it is the enum terminator and the wrapper
@@ -569,13 +584,7 @@ static void texture_forget(GLuint id) {
 static void texture_touch(GLuint id) {
   TextureInfo *info = texture_info(id);
   if (info && info->tracked)
-    info->last_frame = frame_counter;
-}
-
-static void texture_pin(GLuint id) {
-  TextureInfo *info = texture_info(id);
-  if (info)
-    info->pinned = 1;
+    info->last_drawn_ms = now_ms;
 }
 
 /*
@@ -780,6 +789,7 @@ void texture_cache_init(void) {
   evicted_count = restored_count = restore_failed_count = 0;
   ram_evicted_count = card_evicted_count = ram_restored_count = deferred_count = 0;
   restore_deferred_count = 0;
+  subimage_dropped = 0;
   memset(pool_start, 0, sizeof(pool_start));
 
   // The store lives next to the game's own files, in the data directory the
@@ -1175,7 +1185,7 @@ static int restore_texture(GLuint id) {
   info->size = info->resident_size;
   tracked_bytes += info->resident_size;
   info->evicted = 0;
-  info->last_frame = frame_counter;
+  info->last_drawn_ms = now_ms;
   return RESTORE_OK;
 }
 
@@ -1202,7 +1212,7 @@ static void texture_uploaded(GLuint id, uint32_t size, int base_level) {
   if (id > highest_id)
     highest_id = id;
   info->evicted = 0;
-  info->last_frame = frame_counter;
+  info->last_drawn_ms = now_ms;
   tracked_bytes += size;
   info->resident_size = info->size;
 }
@@ -1279,10 +1289,10 @@ static int is_bound(GLuint id) {
 }
 
 // Evicts least recently used textures until we are under target_bytes, leaving
-// anything used within the last min_idle_frames frames alone, and only ones we
+// anything drawn within the last min_idle_ms milliseconds alone, and only ones we
 // can read back again. Returns how many candidates it found, so the caller can
 // tell "nothing to evict" from "hit the per-frame cap".
-static int evict_textures(size_t target_bytes, uint32_t min_idle_frames) {
+static int evict_textures(size_t target_bytes, uint32_t min_idle_ms) {
   EvictionCandidate candidates[TEXTURE_EVICTIONS_PER_FRAME];
   int num_candidates = 0;
 
@@ -1293,7 +1303,7 @@ static int evict_textures(size_t target_bytes, uint32_t min_idle_frames) {
     TextureInfo *info = &textures[id];
     if (!info->tracked || info->pinned || info->evicted || info->size == 0)
       continue;
-    if (frame_counter - info->last_frame < min_idle_frames)
+    if (now_ms - info->last_drawn_ms < min_idle_ms)
       continue;
     // A texture that is still bound to a unit can be drawn without the game ever
     // binding it again, so we would have no moment at which to put it back.
@@ -1306,15 +1316,15 @@ static int evict_textures(size_t target_bytes, uint32_t min_idle_frames) {
     if (num_candidates < TEXTURE_EVICTIONS_PER_FRAME) {
       i = num_candidates++;
     } else {
-      if (info->last_frame >= candidates[TEXTURE_EVICTIONS_PER_FRAME - 1].last_frame)
+      if (info->last_drawn_ms >= candidates[TEXTURE_EVICTIONS_PER_FRAME - 1].last_drawn_ms)
         continue;
       i = TEXTURE_EVICTIONS_PER_FRAME - 1;
     }
 
-    for (; i > 0 && candidates[i - 1].last_frame > info->last_frame; i--)
+    for (; i > 0 && candidates[i - 1].last_drawn_ms > info->last_drawn_ms; i--)
       candidates[i] = candidates[i - 1];
     candidates[i].id = id;
-    candidates[i].last_frame = info->last_frame;
+    candidates[i].last_drawn_ms = info->last_drawn_ms;
   }
 
   if (num_candidates == 0)
@@ -1349,6 +1359,7 @@ void texture_cache_tick(void) {
     return;
 
   frame_counter++;
+  now_ms = tick_now_us() / 1000;
 
   // A texture stays bound to its unit until something displaces it, so one the
   // game bound once and keeps drawing with is still in use even though we never
@@ -1481,7 +1492,7 @@ void texture_cache_tick(void) {
     return;
 
   size_t before = tracked_bytes;
-  evict_textures(target, TEXTURE_IDLE_FRAMES);
+  evict_textures(target, TEXTURE_IDLE_MS);
   // Wanted to reclaim and got nothing: the heap tier is full or the game has
   // the heap, and the card is shut. Counted so that it cannot go on forever.
   if (tracked_bytes < before)
@@ -1539,7 +1550,7 @@ void glBindTextureHook(GLenum target, GLuint texture) {
       // carry what the card would have taken.
       card_writes_allowed = card_tier_enabled;
       size_t target = tracked_bytes > info->resident_size ? tracked_bytes - info->resident_size : 0;
-      evict_textures(target, TEXTURE_IDLE_FRAMES_URGENT);
+      evict_textures(target, TEXTURE_IDLE_MS_URGENT);
     }
 
     // The game is about to draw with a texture we dropped. Put it back.
@@ -1575,10 +1586,37 @@ void glDeleteTexturesHook(GLsizei n, const GLuint *ids) {
   glDeleteTextures(n, ids);
 }
 
+// Bring a texture back before the game writes into it, and keep it.
+//
+// An evicted texture is a 1x1 placeholder standing in for the real one. Every
+// write the game aims at it -- a glyph through glTexSubImage2D, a frame through
+// a framebuffer attachment -- lands in that placeholder rather than in the
+// texture, and the restore that follows puts the older copy back over the top.
+// The write is simply gone. For a font atlas, which the game fills in a glyph
+// at a time, that is text that never appears on screen: the border and the
+// flourishes draw because they are ordinary textures, and the words do not.
+//
+// Returns 0 only when the texture is still a placeholder afterwards, which
+// means there was no memory to restore it into.
+static int texture_make_resident(GLuint id) {
+  TextureInfo *info = texture_info(id);
+  if (!info)
+    return 1; // not one of ours
+  info->pinned = 1; // written into, so never a candidate again
+  if (!info->evicted)
+    return 1;
+  return is_restorable(info) && restore_texture(id) == RESTORE_OK;
+}
+
 void glFramebufferTexture2DHook(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {
   // The game renders into this one, so its contents are not something we could
-  // ever get back off the card.
-  texture_pin(texture);
+  // ever get back off the card. If it is evicted, it has to come back first --
+  // rendering into the placeholder would be thrown away by the next restore.
+  if (texture) {
+    GLuint was = bound_textures[active_unit];
+    texture_make_resident(texture); // restore_texture leaves its own binding
+    glBindTexture(GL_TEXTURE_2D, was);
+  }
   glFramebufferTexture2D(target, attachment, textarget, texture, level);
 }
 
@@ -1673,8 +1711,16 @@ void glCompressedTexImage2DHook(GLenum target, GLint level, GLenum format, GLsiz
 
 void glTexSubImage2DHook(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) {
   // A texture the game keeps writing into is one it is actively using, and the
-  // copy we hold no longer matches what it should look like.
-  texture_pin(bound_textures[active_unit]);
+  // copy we hold no longer matches what it should look like. It also has to be
+  // the real texture and not the placeholder -- see texture_make_resident.
+  if (!texture_make_resident(bound_textures[active_unit])) {
+    // Still a placeholder, and no memory to change that. These pixels are for a
+    // texture of the real size; putting them into a 1x1 writes outside it. The
+    // update is dropped, which leaves the texture stale but whole, and the next
+    // restore that succeeds brings back a version without it.
+    subimage_dropped++;
+    return;
+  }
   glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
 }
 
@@ -1722,5 +1768,6 @@ void texture_cache_stats(TextureCacheStats *out) {
   out->starved = (int)starved_frames;
   out->deferred = (int)deferred_count;
   out->restore_deferred = (int)restore_deferred_count;
+  out->subimage_dropped = (int)subimage_dropped;
   out->blocked = (int)blocked_frames;
 }

@@ -170,8 +170,17 @@ void glBindTexture(GLenum target, GLuint texture) { fake_bound = texture; }
 void glActiveTexture(GLenum texture) { (void)texture; }
 void glTexParameteri(GLenum target, GLenum pname, GLint param) { }
 void glTexParameterf(GLenum target, GLenum pname, GLfloat param) { }
+// Writes the fingerprint the way the real one writes pixels, so a test can tell
+// whether an update landed in the texture or in the 1x1 placeholder standing in
+// for it. Records the size of the slot it was aimed at: a sub-image bigger than
+// its destination is a write outside the allocation on hardware.
+size_t fake_last_subimage_slot_bytes;
 void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
-                     GLsizei height, GLenum format, GLenum type, const GLvoid *pixels) { }
+                     GLsizei height, GLenum format, GLenum type, const GLvoid *pixels) {
+  fake_last_subimage_slot_bytes = fake_slot_bytes[fake_bound];
+  if (fake_slot_data[fake_bound] && fake_slot_bytes[fake_bound] >= sizeof(uint32_t))
+    *(uint32_t *)fake_slot_data[fake_bound] = fingerprint(pixels, (size_t)width * height * 4);
+}
 void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture,
                             GLint level) { }
 

@@ -293,8 +293,13 @@
 #define TEXTURE_RESERVE_MB 32
 // How long a texture has to go unused before we are willing to drop it, in
 // frames. The urgent value applies when we are about to run out of memory.
-#define TEXTURE_IDLE_FRAMES 150
-#define TEXTURE_IDLE_FRAMES_URGENT 30
+// Milliseconds, not frames. The old figures were 150 and 30 ticks of a counter
+// that advances once per ProcessEvents call, and a real session ran those from
+// 1 to 718 a second -- so the policy varied by seven hundred times depending on
+// whether you were in a street or a menu. These are what 150 and 30 were meant
+// to be at thirty frames a second.
+#define TEXTURE_IDLE_MS 5000
+#define TEXTURE_IDLE_MS_URGENT 1000
 // Upper bound on how many textures a single frame may evict, so that reclaiming
 // memory does not turn into a visible hitch.
 #define TEXTURE_EVICTIONS_PER_FRAME 64
