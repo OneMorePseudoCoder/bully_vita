@@ -11,6 +11,24 @@
 
 // Opens the backing store and starts the writer thread. Call once, after fios
 // is up and before the game gets a chance to upload anything.
+// The store's on-card format. BUMP THIS whenever BackupRecord's layout changes
+// or a field changes meaning, and bump BACKUP_MAGIC with it.
+//
+// It goes in the filename, and that is the point. The scan builds the index
+// from names alone -- it never opens a file, because opening 1761 of them at
+// boot is most of a minute. So a store written by an older loader parses,
+// indexes, and is believed. Every one of those entries then costs a card open,
+// a read, a failed check and a delete, in the middle of gameplay, on the frame
+// thread, at the moment the texture is wanted -- and worse than having no store
+// at all, because store_has told the eviction it was free and it was not.
+//
+// This happened. The verify hash added two words to the record and nothing
+// marked the format, so a run reported "1761 textures kept from previous runs"
+// about a store where not one file was readable. With the version in the name
+// they simply fail to parse, and the scan deletes them in the pass it already
+// makes.
+#define BACKUP_FORMAT 3
+
 void texture_cache_init(void);
 
 // GL entry points the game resolves through the dynamic library table. They
