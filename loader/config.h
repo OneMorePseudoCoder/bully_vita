@@ -254,14 +254,38 @@
 #define TEXTURE_POOL_SAMPLE_FRAMES 15
 #define TEXTURE_POOL_MB_PER_FRAME 2
 
-#define TEXTURE_FREE_HEADROOM_PERCENT 25
-
-// ...and the mark reclaiming starts at. Reaching for a quarter free only once a
-// pool has actually dropped to this, rather than the moment it slips below the
-// quarter, is what stops the cache trickling evictions forever against a pool
-// that is sitting a megabyte under its ideal. Above the emergency threshold, so
-// the card still opens before this ever becomes a shortage.
-#define TEXTURE_FREE_HEADROOM_LOW_PERCENT 15
+// Where reclaiming stops, and below, where it starts.
+//
+// These used to be 25 and 15, which put the start of reclaiming at 15% of a
+// 105 MB pool -- 15.75 MB. A 3.8 hour session with every upload and every stage
+// of every restore timed says that is far too late. Excluding the intervals
+// where the loader did any work at all, and the menu phase where the game is
+// not drawing a world, the frame rate tracks free RAM and nothing else:
+//
+//     ram <= 18 MB   n=90   mean 19.5/s   median 18   min 11
+//     ram 19-22 MB   n=79   mean 51.0/s   median 45
+//     ram 23-25 MB   n= 8   mean 71.0/s   median 76
+//     ram >= 26 MB   n=62   mean 61.6/s   median 61
+//
+// Three times slower at 18 MB than at 19 and above, and the same session shows
+// it directly: nineteen minutes at 18/s with the pool at 18 MB and every cache
+// counter frozen, then a burst takes it to 26 MB and it is back at 70-81/s.
+// The cost is not in this loader -- upload and restore together came to 0.56%
+// of the session's wall clock, and in the slow stretches they were zero -- so
+// what a nearly empty pool costs is being paid inside vitaGL or the GPU, where
+// this cache cannot see it and can only stay out of it.
+//
+// The old marks straddled that cliff: reclaiming began at 15.75 MB, which is
+// two megabytes past the point where the game had already lost two thirds of
+// its frame rate, and everything between 16 and 26 was declared fine. So start
+// at a quarter free, which is above the collapse with margin -- the pool falls
+// four to eight megabytes between samples when the game is loading -- and run
+// until a third, which is as far as the measurements show any gain.
+//
+// The cost of this is more bursts. Restores came to 58 seconds across 3.8
+// hours; several times that is still nothing against nineteen minutes at 18/s.
+#define TEXTURE_FREE_HEADROOM_PERCENT 32
+#define TEXTURE_FREE_HEADROOM_LOW_PERCENT 25
 // The point at which a pool counts as actually running out, rather than merely
 // below its target. Only here may reclaiming fall back to the memory card, so
 // this is the floor the cache really defends: above it a texture with nowhere

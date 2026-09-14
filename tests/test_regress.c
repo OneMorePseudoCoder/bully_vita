@@ -182,7 +182,13 @@ int main(void) {
     frames(TEXTURE_IDLE_FRAMES * 8);
     printf("store reuse  : %u spilled, %u evictions free on the next run, %u written  OK\n",
            spilled, store_reused, card_evicted_count);
-    assert(store_reused >= spilled && "every stored texture must evict for free");
+    // Most of what the store holds, evicted for free. Not "at least as many as
+    // the first run spilled": that counts how hard the cache was driven rather
+    // than whether the store works, and a cache that recovers the pool sooner
+    // legitimately evicts fewer textures the second time round. What matters is
+    // below -- that nothing already in the store is paid for again.
+    assert(store_reused * 10 >= (uint32_t)spilled * 8 &&
+           "the store is not being used for the evictions that did happen");
     // Not zero, and it should not be. Freeing an eviction from its ration means
     // more of them succeed, so textures that only ever reached the heap tier on
     // the first run get as far as the card on the second and are written once,
@@ -271,20 +277,26 @@ int main(void) {
     }
     frames(TEXTURE_IDLE_FRAMES * 2);
 
-    // Between the marks: under the quarter it would like, well above the point
-    // at which it should start doing anything about it.
-    fake_set_pools(81 * MB, 20 * MB, 26 * MB);
+    // Derived from the marks rather than written out, so that moving them does
+    // not silently turn this into a test of something else -- which is what
+    // happened the first time they moved.
+    const size_t low_mb = pool_start[1] / 100 * TEXTURE_FREE_HEADROOM_LOW_PERCENT / MB;
+    const size_t high_mb = pool_start[1] / 100 * TEXTURE_FREE_HEADROOM_PERCENT / MB;
+    assert(high_mb > low_mb + 1 && "the two marks have to leave room between them");
+
+    // Between the marks: under what it would like, above the point at which it
+    // should start doing anything about it.
+    fake_set_pools(81 * MB, (low_mb + high_mb) / 2 * MB, 26 * MB);
     int before = evicted_count;
     frames(600);
-    printf("headroom     : %d MB free against a %d MB target, %d evicted over 600 frames  OK\n",
-           20, (int)(pool_start[1] / 100 * TEXTURE_FREE_HEADROOM_PERCENT / MB),
-           evicted_count - before);
+    printf("headroom     : %zu MB free, marks at %zu and %zu, %d evicted over 600 frames  OK\n",
+           (low_mb + high_mb) / 2, low_mb, high_mb, evicted_count - before);
     assert(evicted_count == before && "a pool between the marks must be left alone");
 
     // Below the low mark, and it has to act -- and act past the low mark rather
     // than just back over it, or it lands straight back here next frame.
-    fake_set_pools(81 * MB, 10 * MB, 26 * MB);
-    frames(4);
+    fake_set_pools(81 * MB, (low_mb - 2) * MB, 26 * MB);
+    frames(TEXTURE_POOL_SAMPLE_FRAMES * 2);
     assert(evicted_count > before && "a pool below the low mark must be reclaimed");
     printf("             : %d evicted once it dropped below the low mark  OK\n",
            evicted_count - before);
@@ -824,6 +836,43 @@ int main(void) {
     assert(ram_evicted_count == parked_was && "nor copied to the heap");
     printf("             : a sound one still evicts for free  OK\n");
     fake_heap_used = 0;
+  }
+
+  // Reclaiming has to start before the frame rate has already gone.
+  //
+  // The measurement this is set from: with the loader idle and the game drawing
+  // a world, a 105 MB RAM pool at 18 MB or less ran at a median of 18
+  // ProcessEvents a second against 45 to 76 once it was 19 or more. The cache
+  // cannot see what a nearly empty pool costs -- it is not spending that time
+  // itself -- so the only thing it can do is not let the pool get there.
+  {
+    harness_start_empty(0);
+    fake_set_pools(81 * MB, 105 * MB, 26 * MB); // the figures off the console
+    tick();
+    assert(pool_start[1] == 105 * MB);
+
+    GLuint held[192];
+    for (int i = 0; i < 192; i++) {
+      held[i] = tex_upload(0xDEC1DE00u + (unsigned)i, 512, 512, TEX_BYTES);
+      drain();
+    }
+    (void)held;
+    frames(TEXTURE_IDLE_FRAMES * 2);
+
+    // Walk the pool down the way a game loading an area does, and note where
+    // the cache first does something about it.
+    uint32_t before = evicted_count;
+    size_t acted_at = 0;
+    for (size_t free_mb = 40; free_mb >= 8 && !acted_at; free_mb -= 2) {
+      fake_set_pools(81 * MB, free_mb * MB, 26 * MB);
+      frames(TEXTURE_POOL_SAMPLE_FRAMES * 2);
+      if (evicted_count > before)
+        acted_at = free_mb;
+    }
+    assert(acted_at && "the cache never reclaimed at all");
+    printf("headroom     : first eviction with %zu MB of 105 still free  OK\n", acted_at);
+    assert(acted_at > 18 &&
+           "reclaiming starts inside the band where the frame rate has collapsed");
   }
 
   // The intro movie is not a texture shortage.
