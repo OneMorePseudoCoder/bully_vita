@@ -502,14 +502,16 @@ int main(void) {
     // belongs to and ask for it back.
     fake_reset(192 * MB);
     texture_cache_init();
+    // Before the evictions, not after them: a file that will not read back is
+    // now usually caught by the eviction that would have freed the pixels,
+    // rather than by the restore that used to find the pixels already gone.
+    uint32_t refused_before = restore_failed_count + store_unsound;
     for (int i = 0; i < count; i++) {
       ids[i] = tex_upload(0x33000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
       tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
-
-    uint32_t refused_before = restore_failed_count;
     int wrong = 0, looked = 0;
     for (int i = 0; i < count; i++) {
       if (!textures[ids[i]].evicted)
@@ -531,14 +533,20 @@ int main(void) {
     // and the checksum over the data are all still correct, which is precisely
     // the position a colliding texture's file leaves us in. Every other file
     // here is sound, so a refusal in this pass is that one and nothing else.
-    assert(restore_failed_count > refused_before &&
+    //
+    // Either end of the eviction catches it now. It used to be caught only at
+    // restore, by which time the pixels were already freed and the texture was
+    // lost; the eviction reads a carried-in file before believing it, so the
+    // usual outcome is that it is thrown away and a good copy written over it.
+    assert(restore_failed_count + store_unsound > refused_before &&
            "the mismatched file was accepted rather than refused");
-    // And refusing it has to take it off the card. Left there, every future
-    // eviction of that texture is told the store already holds it, frees the
-    // pixels without writing, and finds nothing to read -- for the rest of this
-    // session and every session after it.
-    assert(access(fake_last_scrambled_path(), F_OK) != 0 &&
-           "the file that would not read back is still on the card");
+    // And nothing was lost to it. The eviction that would have freed the
+    // pixels reads a carried-in file first, so the bad one is thrown away and
+    // a good copy written over it -- which is why the path is occupied again
+    // afterwards and why no restore in this pass had to fail. A file that
+    // fails must never be left indexed as good, whichever end catches it.
+    assert(restore_failed_count == 0 &&
+           "a texture was lost to a file that would not read back");
     // Off the card and out of the index, which are two separate things. An
     // index still claiming a file that is gone is the same trap by another
     // route: store_has says yes, the eviction frees the pixels without writing,
@@ -546,7 +554,8 @@ int main(void) {
     assert(store_files == fake_store_files() &&
            "the index claims files the card does not have");
     printf("wrong file   : %d restores checked, %d drawn as another texture, "
-           "%u refused  OK\n", looked, wrong, restore_failed_count - refused_before);
+           "%u refused  OK\n", looked, wrong,
+           restore_failed_count + store_unsound - refused_before);
   }
 
   // What the key and the verify hash have to be, before any of the machinery
@@ -648,6 +657,75 @@ int main(void) {
 
   // A restore that cannot get memory must not retire the texture.
   //
+  // A stored copy that will not read back must be found before the pixels are
+  // freed, not after.
+  //
+  // The scan indexes the store by filename and never opens anything, so a file
+  // carried in from a previous run is a name in a directory. Believing it and
+  // freeing the texture leaves a 1x1 placeholder with nothing to restore from:
+  // a real session lost nineteen textures that way, and a lost texture draws
+  // black for the rest of the run.
+  {
+    harness_start_empty(192 * MB);
+    fake_heap_used = (size_t)MEMORY_NEWLIB_MB * MB; // no heap tier: it goes to the card
+    GLuint id = tex_upload(0xC0B0A0FEu, 512, 512, TEX_BYTES);
+    drain();
+    frames(TEXTURE_IDLE_FRAMES * 2);
+    glBindTextureHook(GL_TEXTURE_2D, 0);
+    card_writes_allowed = 1;
+    evict_texture(id);
+    assert(textures[id].evicted && fake_store_files() > 0);
+    glBindTextureHook(GL_TEXTURE_2D, id);
+    assert(!textures[id].evicted && "it had to come back for the rest of this");
+
+    // Start again, so the store is read the way a new run reads it: from the
+    // names alone, with nothing verified.
+    unsigned kept = fake_store_files();
+    fake_reset(192 * MB);
+    texture_cache_init();
+    fake_heap_used = (size_t)MEMORY_NEWLIB_MB * MB;
+    assert(store_files == kept && "the file had to be carried in");
+    id = tex_upload(0xC0B0A0FEu, 512, 512, TEX_BYTES);
+    drain();
+    frames(TEXTURE_IDLE_FRAMES * 2);
+    assert(store_has(textures[id].key, textures[id].resident_size) &&
+           "the carried-in file has to match this texture");
+
+    // Damage it the way the console did: full length, right name, wrong bytes.
+    assert(fake_scramble_store_word((int)(sizeof(BackupRecord) / 4) + 1) &&
+           "the harness had a file to damage");
+
+    uint32_t unsound_was = store_unsound, reused_was = store_reused;
+    size_t bytes_was = fake_slot_bytes[id];
+    glBindTextureHook(GL_TEXTURE_2D, 0);
+    card_writes_allowed = 1;
+    evict_texture(id);
+    assert(store_unsound == unsound_was + 1 &&
+           "a copy that does not read back was trusted");
+    assert(store_reused == reused_was && "and counted as a free eviction");
+    // Either it wrote a fresh copy and evicted, or it kept the texture. What it
+    // must never do is free the pixels believing a file that is not there.
+    if (textures[id].evicted) {
+      glBindTextureHook(GL_TEXTURE_2D, id);
+      assert(!textures[id].evicted && "the fresh copy did not restore");
+      assert(fake_sampled(id) == fake_fingerprint_of(0xC0B0A0FEu) &&
+             "it came back as something else");
+    } else {
+      assert(fake_slot_bytes[id] == bytes_was && "the pixels were freed anyway");
+    }
+    printf("unsound copy : a carried-in file is read before it is trusted  OK\n");
+
+    // And a file this run wrote is trusted without reading it again.
+    uint32_t reads_was = store_unsound;
+    glBindTextureHook(GL_TEXTURE_2D, 0);
+    card_writes_allowed = 1;
+    reused_was = store_reused;
+    evict_texture(id);
+    assert(store_unsound == reads_was && "a sound copy was called unsound");
+    printf("             : one this run wrote is taken on trust  OK\n");
+    fake_heap_used = 0;
+  }
+
   // A texture vitaGL will not describe is a texture this cache must not drop.
   //
   // Evicting is not "put a copy somewhere and forget the pixels" -- the pixels

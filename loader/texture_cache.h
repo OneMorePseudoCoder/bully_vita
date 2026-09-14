@@ -79,6 +79,7 @@ typedef struct {
   int restore_deferred; // restores that found no memory and will be asked again
   int subimage_dropped; // writes lost because the texture would not come back
   int upload_rejected;  // uploads vitaGL had no memory for, which draw as black
+  int store_unsound;    // stored copies that did not read back, caught before use
   int blocked; // consecutive frames it has wanted to free memory and freed none
 } TextureCacheStats;
 

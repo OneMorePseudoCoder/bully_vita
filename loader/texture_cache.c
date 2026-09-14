@@ -214,6 +214,9 @@ static uint32_t subimage_dropped;
 // raid on the game's own heap, which was the leak this loader exists to stop.
 // That trade is the right one, but it has to be visible.
 static uint32_t upload_rejected;
+// Stored copies carried in from a previous run that did not survive being read
+// back, caught at eviction time rather than after the pixels were freed.
+static uint32_t store_unsound;
 
 
 // vglMemFree refuses VGL_MEM_ALL: it is the enum terminator and the wrapper
@@ -508,6 +511,20 @@ static uint64_t verify_sample(uint64_t h, const void *data, uint32_t size) {
 typedef struct {
   uint64_t key;
   uint32_t bytes;
+  // Whether this run has seen the file read back and check out.
+  //
+  // A file written by this run is trustworthy because we wrote it. One carried
+  // in from a previous run is a name in a directory listing and nothing more --
+  // the scan never opens a file, deliberately, because opening thirteen hundred
+  // of them at boot is most of a minute.
+  //
+  // That is fine for deciding whether a copy exists. It is not enough to free a
+  // texture's pixels on, and freeing them is exactly what the eviction does
+  // next. If the file then turns out not to read back, the pixels are already
+  // gone and the texture is a black rectangle for the rest of the session: a
+  // real run lost nineteen textures that way, which is what a character
+  // rendering as a silhouette looks like.
+  uint8_t verified;
 } StoreEntry;
 
 static StoreEntry store_index[STORE_SLOTS];
@@ -523,18 +540,22 @@ static uint32_t store_slot(uint64_t key) {
 // Present, and holding exactly this many bytes. The size is checked as well as
 // the key because it is the one thing a restore cannot recover from getting
 // wrong: it memcpys that many bytes into the buffer vitaGL just allocated.
-static int store_has(uint64_t key, uint32_t bytes) {
+static StoreEntry *store_find(uint64_t key, uint32_t bytes) {
   if (!key)
-    return 0;
+    return NULL;
   uint32_t i = store_slot(key);
   for (uint32_t probe = 0; probe < 32; probe++) {
-    const StoreEntry *e = &store_index[(i + probe) & STORE_MASK];
+    StoreEntry *e = &store_index[(i + probe) & STORE_MASK];
     if (!e->key)
-      return 0;
+      return NULL;
     if (e->key == key)
-      return e->bytes == bytes;
+      return e->bytes == bytes ? e : NULL;
   }
-  return 0;
+  return NULL;
+}
+
+static int store_has(uint64_t key, uint32_t bytes) {
+  return store_find(key, bytes) != NULL;
 }
 
 // Takes a file back out of the index, for one that turned out not to be
@@ -562,20 +583,29 @@ static void store_forget(uint64_t key) {
   }
 }
 
-static void store_add(uint64_t key, uint32_t bytes) {
+static void store_add(uint64_t key, uint32_t bytes, int written_here) {
   if (!key)
     return;
   uint32_t i = store_slot(key);
   for (uint32_t probe = 0; probe < 32; probe++) {
     StoreEntry *e = &store_index[(i + probe) & STORE_MASK];
     if (e->key == key) {
+      // A slot with no size is one store_forget emptied after the file turned
+      // out to be unreadable. Writing a good file over it puts a file back on
+      // the card, so the count has to come back with it -- without this the
+      // index reports fewer files than the card holds, by one for every copy
+      // that was ever replaced.
+      if (!e->bytes)
+        store_files++;
       store_bytes += bytes > e->bytes ? bytes - e->bytes : 0;
       e->bytes = bytes;
+      e->verified = (uint8_t)written_here;
       return;
     }
     if (!e->key) {
       e->key = key;
       e->bytes = bytes;
+      e->verified = (uint8_t)written_here;
       store_files++;
       store_bytes += bytes;
       return;
@@ -724,7 +754,7 @@ static void scan_store(void) {
                      entry.d_stat.st_size <= ceil_size)) &&
                    store_bytes + bytes <= cap && !store_has(key, bytes);
       if (usable) {
-        store_add(key, bytes);
+        store_add(key, bytes, 0); // a name in a directory, nothing more
         continue;
       }
 
@@ -825,6 +855,7 @@ void texture_cache_init(void) {
   restore_deferred_count = 0;
   subimage_dropped = 0;
   upload_rejected = 0;
+  store_unsound = 0;
   memset(pool_start, 0, sizeof(pool_start));
 
   // The store lives next to the game's own files, in the data directory the
@@ -956,6 +987,47 @@ static int backup_stage(TextureInfo *info, GLuint id, GLint level, GLsizei width
 // while the cache sat on textures; parking more there would take the game down
 // rather than save it.
 //
+// Reads a store file back and checks it, for one this run did not write.
+//
+// Returns 1 if it is sound, 0 if it is not -- in which case the file is off the
+// card and out of the index by the time this returns -- and -1 if we could not
+// find out just now.
+static int store_verify(const TextureInfo *info, GLuint id, const char *path) {
+  if (!restore_scratch) {
+    restore_scratch = malloc((size_t)TEXTURE_BACKUP_MAX_KB * 1024);
+    if (!restore_scratch)
+      return -1; // no room to read it into; the eviction can wait
+  }
+
+  SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
+  if (fd < 0) {
+    store_forget(info->key);
+    return 0;
+  }
+  BackupRecord record;
+  memset(&record, 0, sizeof(record));
+  int header = sceIoRead(fd, &record, sizeof(record));
+  uint64_t stored_key = ((uint64_t)record.key_hi << 32) | record.key_lo;
+  uint64_t stored_verify = ((uint64_t)record.verify_hi << 32) | record.verify_lo;
+  int got = 0;
+  if (header == (int)sizeof(record) && record.magic == BACKUP_MAGIC &&
+      stored_key == info->key && stored_verify == info->verify &&
+      record.bytes <= (uint32_t)TEXTURE_BACKUP_MAX_KB * 1024)
+    got = sceIoRead(fd, restore_scratch, record.bytes);
+  sceIoClose(fd);
+
+  if (got != (int)record.bytes || checksum(restore_scratch, record.bytes) != record.checksum) {
+    sceIoRemove(path);
+    store_forget(info->key);
+    store_unsound++;
+    traceLog("texture cache: the stored copy of %u, key %08x%08x, does not read "
+             "back -- writing a new one instead\n",
+             id, (unsigned)(info->key >> 32), (unsigned)info->key);
+    return 0;
+  }
+  return 1;
+}
+
 // Returns 1 once the bytes are safe, 0 if this texture can never be saved, and
 // -1 if it could be but not in this frame. The caller has to keep those apart:
 // only the middle one is a reason to stop considering the texture.
@@ -974,7 +1046,8 @@ static int backup_capture(TextureInfo *info, GLuint id) {
   // exists to keep a write out of a frame, and there is no write here; leaving
   // this until after it, which is where it started, meant a free eviction was
   // refused for the cost of one it was not going to pay.
-  if (store_has(info->key, info->resident_size)) {
+  StoreEntry *already = store_find(info->key, info->resident_size);
+  if (already) {
     // Look at the buffer before saying yes, even though there is nothing to
     // read out of it.
     //
@@ -1005,6 +1078,36 @@ static int backup_capture(TextureInfo *info, GLuint id) {
                (unsigned)info->resident_size, (unsigned)usable);
       return 0; // never touch this one again
     }
+    // And read the file back, once, before freeing the only other copy of it.
+    //
+    // The scan builds the index out of filenames and never opens anything --
+    // that is what keeps boot from costing a minute -- so a file carried in
+    // from a previous run is a name in a directory and nothing more. Good
+    // enough to say a copy exists. Not good enough to free the pixels on, and
+    // freeing them is what happens next.
+    //
+    // A real session found out the hard way: nineteen files read back at their
+    // full length and failed their own checksum, and every one of those
+    // textures was already a 1x1 placeholder by then, with nothing left to
+    // restore from. They stay black until the game uploads them again. That is
+    // the silhouette in the screenshot.
+    //
+    // Once per file per run. A file this run wrote is trusted on the strength
+    // of having written it, and a file that passes here is not read again.
+    if (!already->verified) {
+      char check[160];
+      texture_path(check, sizeof(check), info->key, info->resident_size);
+      int sound = store_verify(info, id, check);
+      if (sound < 0)
+        return -1; // nowhere to read it; nothing wrong with the texture
+      if (sound)
+        already->verified = 1;
+      // If it was not sound it is gone from the card and the index now, so fall
+      // through and take a fresh copy the ordinary way.
+      already = sound ? already : NULL;
+    }
+  }
+  if (already) {
     info->backup_bytes = info->resident_size;
     store_reused++;
     return 1;
@@ -1085,7 +1188,7 @@ static int backup_capture(TextureInfo *info, GLuint id) {
     return -1;
   }
   info->backup_bytes = real_bytes;
-  store_add(info->key, info->resident_size);
+  store_add(info->key, info->resident_size, 1); // written here, from checksummed pixels
   card_evicted_count++;
   return 1;
 }
@@ -1921,5 +2024,6 @@ void texture_cache_stats(TextureCacheStats *out) {
   out->restore_deferred = (int)restore_deferred_count;
   out->subimage_dropped = (int)subimage_dropped;
   out->upload_rejected = (int)upload_rejected;
+  out->store_unsound = (int)store_unsound;
   out->blocked = (int)blocked_frames;
 }
