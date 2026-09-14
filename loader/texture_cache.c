@@ -387,8 +387,21 @@ static void texture_path(char *out, size_t out_size, uint64_t key, uint32_t byte
  * Sampled, because sceKernelGetProcessTime is a syscall and this path runs
  * forty thousand times a session.
  */
-#define UPLOAD_SAMPLE 64
-static uint32_t upload_samples, upload_count;
+// Every upload is timed, not one in sixty-four.
+//
+// It used to sample, and scale the total back up by the sampling rate. That is
+// a reasonable way to measure an average and a useless way to catch a stall: a
+// rare one-second upload is missed sixty-three times in sixty-four, and on the
+// sixty-fourth it is reported as sixty-four seconds. The question being asked
+// of this is "did any single upload take a second", which sampling cannot
+// answer at all.
+//
+// The cost is two clock reads per glTexImage2D. That is per texture, not per
+// pixel, and the thing being measured is the upload itself.
+static uint32_t upload_count;
+// The slowest single upload of the session, and how many crossed the line that
+// makes an upload a stall rather than a cost.
+static uint32_t upload_worst_us, upload_slow;
 
 /*
  * Where a restore's time goes
@@ -422,6 +435,20 @@ static uint32_t upload_now_us(void) {
   SceKernelSysClock now;
   sceKernelGetProcessTime(&now);
   return (uint32_t)now;
+}
+
+// One upload's time inside the driver, against the line that separates a cost
+// from a stall.
+//
+// vitaGL's allocator, when the pools cannot serve a texture, calls sceGxmFinish
+// and then sceKernelDelayThread for a whole second, and does that up to four
+// times before giving up. Whether that is happening is not a question an
+// average can answer -- it is a question about the worst one.
+static void note_upload_cost(uint32_t us) {
+  if (us > upload_worst_us)
+    upload_worst_us = us;
+  if (us >= (uint32_t)TEXTURE_SLOW_UPLOAD_MS * 1000)
+    upload_slow++;
 }
 
 /*
@@ -854,6 +881,7 @@ void texture_cache_init(void) {
   ram_evicted_count = card_evicted_count = ram_restored_count = deferred_count = 0;
   restore_deferred_count = 0;
   subimage_dropped = 0;
+  upload_worst_us = upload_slow = 0;
   upload_rejected = 0;
   store_unsound = 0;
   memset(pool_start, 0, sizeof(pool_start));
@@ -1925,21 +1953,19 @@ void glTexImage2DHook(GLenum target, GLint level, GLint internalformat, GLsizei 
   if (level != 0)
     return;
 
-  int timed = ++upload_count % UPLOAD_SAMPLE == 0;
-  uint32_t t0 = timed ? upload_now_us() : 0;
+  upload_count++;
+  uint32_t t0 = upload_now_us();
   glTexImage2D(target, level, internalformat, width, height, border, format, type, data);
-  uint32_t t1 = timed ? upload_now_us() : 0;
+  uint32_t t1 = upload_now_us();
+  note_upload_cost(t1 - t0);
 
   uint32_t bpp = bytes_per_pixel(internalformat, type);
   upload_finished(target, level, width, height,
                   (uint32_t)width * (uint32_t)height * bytes_per_pixel(format, type),
                   (uint32_t)((width + 7) & ~7) * (uint32_t)height * bpp,
                   internalformat, format, type, 0, data);
-  if (timed) {
-    upload_driver_us += t1 - t0;
-    upload_loader_us += upload_now_us() - t1;
-    upload_samples++;
-  }
+  upload_driver_us += t1 - t0;
+  upload_loader_us += upload_now_us() - t1;
 }
 
 void glCompressedTexImage2DHook(GLenum target, GLint level, GLenum format, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data) {
@@ -1950,17 +1976,15 @@ void glCompressedTexImage2DHook(GLenum target, GLint level, GLenum format, GLsiz
   if (!(level == 0 || ((width >= 4 && height >= 4) || (format != 0x8C01 && format != 0x8C02))))
     return;
 
-  int timed = ++upload_count % UPLOAD_SAMPLE == 0;
-  uint32_t t0 = timed ? upload_now_us() : 0;
+  upload_count++;
+  uint32_t t0 = upload_now_us();
   glCompressedTexImage2D(target, level, format, width, height, border, imageSize, data);
-  uint32_t t1 = timed ? upload_now_us() : 0;
+  uint32_t t1 = upload_now_us();
+  note_upload_cost(t1 - t0);
 
   upload_finished(target, level, width, height, imageSize, imageSize, format, format, 0, 1, data);
-  if (timed) {
-    upload_driver_us += t1 - t0;
-    upload_loader_us += upload_now_us() - t1;
-    upload_samples++;
-  }
+  upload_driver_us += t1 - t0;
+  upload_loader_us += upload_now_us() - t1;
 }
 
 void glTexSubImage2DHook(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) {
@@ -2008,8 +2032,10 @@ void texture_cache_stats(TextureCacheStats *out) {
   out->spilled = (int)card_evicted_count;
   out->reused = (int)store_reused;
   // Scaled back up from the sample, so these read as whole-session totals.
-  out->upload_driver_ms = (int)(upload_driver_us * UPLOAD_SAMPLE / 1000);
-  out->upload_loader_ms = (int)(upload_loader_us * UPLOAD_SAMPLE / 1000);
+  out->upload_driver_ms = (int)(upload_driver_us / 1000);
+  out->upload_loader_ms = (int)(upload_loader_us / 1000);
+  out->upload_worst_ms = (int)(upload_worst_us / 1000);
+  out->upload_slow = (int)upload_slow;
   out->key_hashed_mb = (int)(key_bytes_hashed / (1024 * 1024));
   out->restore_open_ms = (int)(restore_open_us / 1000);
   out->restore_read_ms = (int)(restore_read_us / 1000);

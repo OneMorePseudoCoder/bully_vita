@@ -327,6 +327,11 @@
 // store outlives the process on purpose: the key does not depend on the texture
 // name vitaGL handed out this run, so a second run finds its textures already
 // there and writes nothing. Deleting the folder is always safe.
+// What makes an upload a stall rather than a cost. vitaGL sleeps a whole second
+// per retry when its pools cannot serve a texture, so anything near this is the
+// allocator waiting rather than the upload working.
+#define TEXTURE_SLOW_UPLOAD_MS 50
+
 #define TEXTURE_CACHE_DIR DATA_PATH "/" "textures"
 // Ceiling on the cache file, and how much of the card to leave alone. The
 // actual limit is whichever is smaller: this, or the free space minus the

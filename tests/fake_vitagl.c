@@ -44,6 +44,17 @@ int fake_reject_next_upload;
 // was asked for. The buffer really is that big, so this is slack, not a lie.
 size_t fake_slot_usable[FAKE_SLOTS];
 size_t fake_next_usable_bonus;
+// Time the driver spends inside the next upload. vitaGL's allocator, when its
+// pools cannot serve a texture, calls sceGxmFinish and then sleeps for a whole
+// second before retrying, so an upload really can take that long.
+uint64_t fake_next_upload_delay_us;
+void fake_advance_clock(uint64_t us);
+static void fake_upload_delay(void) {
+  if (fake_next_upload_delay_us) {
+    fake_advance_clock(fake_next_upload_delay_us);
+    fake_next_upload_delay_us = 0;
+  }
+}
 
 void fake_reset(size_t free_memory) {
   memset(fake_slot_bytes, 0, sizeof(fake_slot_bytes));
@@ -64,6 +75,7 @@ void fake_reset(size_t free_memory) {
   fake_reject_next_upload = 0;
   memset(fake_slot_usable, 0, sizeof(fake_slot_usable));
   fake_next_usable_bonus = 0;
+  fake_next_upload_delay_us = 0;
 }
 
 void fake_set_pools(size_t cdram, size_t ram, size_t phycont) {
@@ -198,6 +210,7 @@ void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, 
 void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height,
                   GLint border, GLenum format, GLenum type, const GLvoid *data) {
   assert(fake_slot_alive[fake_bound]);
+  fake_upload_delay();
   if (fake_reject_next_upload) { fake_reject_next_upload = 0; set_slot(fake_bound, 0, 0); return; }
   size_t face = (size_t)((width + 7) & ~7) * height * fake_bpp(internalFormat, type);
   // A cube map is six faces in one allocation behind a single name, and it is
@@ -212,6 +225,7 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei widt
 void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLsizei width,
                             GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data) {
   assert(fake_slot_alive[fake_bound]);
+  fake_upload_delay();
   if (fake_reject_next_upload) { fake_reject_next_upload = 0; set_slot(fake_bound, 0, 0); return; }
   if (target != GL_TEXTURE_2D) {
     set_slot(fake_bound, (size_t)imageSize * 6, CUBE_CONTENT);

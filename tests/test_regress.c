@@ -657,6 +657,35 @@ int main(void) {
 
   // A restore that cannot get memory must not retire the texture.
   //
+  // A stall has to be seen as a stall.
+  //
+  // vitaGL's allocator, when its pools cannot serve a texture, calls
+  // sceGxmFinish and then sceKernelDelayThread for a full second, up to four
+  // times. Whether that is happening is a question about the worst upload, and
+  // the cache used to time one upload in sixty-four and scale the total up by
+  // sixty-four -- which misses a rare stall almost always and reports it as a
+  // minute when it does not.
+  {
+    harness_start_empty(192 * MB);
+    TextureCacheStats st;
+    for (int i = 0; i < 70; i++) { tex_upload(0x5701A110u + (unsigned)i, 256, 256, 65536); drain(); }
+    texture_cache_stats(&st);
+    assert(st.upload_slow == 0 && "nothing had stalled yet");
+    int worst_before = st.upload_worst_ms;
+
+    // One upload, on the wrong side of sixty-four, spends a second in the
+    // driver the way a failed allocation does.
+    fake_next_upload_delay_us = 1000000;
+    tex_upload(0x5701A199u, 256, 256, 65536);
+    drain();
+    texture_cache_stats(&st);
+    assert(st.upload_slow == 1 && "a one second upload was not counted as a stall");
+    assert(st.upload_worst_ms >= 1000 && st.upload_worst_ms > worst_before &&
+           "the worst upload was averaged away");
+    assert(st.upload_driver_ms >= 1000 && "the second did not reach the total");
+    printf("stall        : a one second upload is seen, not sampled over  OK\n");
+  }
+
   // A stored copy that will not read back must be found before the pixels are
   // freed, not after.
   //

@@ -213,6 +213,38 @@ static void memory_heartbeat(void) {
            (int)(vglMemFree(VGL_MEM_PHYCONT) / (1024 * 1024)),
            vert.held_kb, vert.released_kb, stream.memory_used_mb,
            stream.budget_mb, stream.refusals);
+
+  // Where the time went, which the cache has always measured and never said.
+  //
+  // As deltas over the interval, because these are running totals and a total
+  // eleven hours into a session says nothing about the twenty seconds that just
+  // went slowly. The worst upload is a high-water mark and stays cumulative:
+  // the question it answers is whether any single upload has ever taken long
+  // enough to be vitaGL's allocator sleeping rather than an upload working.
+  static int last_driver, last_loader, last_slow, last_open, last_read;
+  static int last_sum, last_replay, last_copy, last_heap, last_card;
+  traceLog("cost: upload %d ms (worst %d ms, %d over %d) | restore %d ms = "
+           "open %d read %d sum %d replay %d copy %d | back from heap %d card %d\n",
+           tex.upload_driver_ms - last_driver, tex.upload_worst_ms,
+           tex.upload_slow - last_slow, TEXTURE_SLOW_UPLOAD_MS,
+           (tex.restore_open_ms - last_open) + (tex.restore_read_ms - last_read) +
+               (tex.restore_sum_ms - last_sum) + (tex.restore_replay_ms - last_replay) +
+               (tex.restore_copy_ms - last_copy),
+           tex.restore_open_ms - last_open, tex.restore_read_ms - last_read,
+           tex.restore_sum_ms - last_sum, tex.restore_replay_ms - last_replay,
+           tex.restore_copy_ms - last_copy, tex.restore_from_heap - last_heap,
+           tex.restore_from_card - last_card);
+  last_driver = tex.upload_driver_ms;
+  last_loader = tex.upload_loader_ms;
+  last_slow = tex.upload_slow;
+  last_open = tex.restore_open_ms;
+  last_read = tex.restore_read_ms;
+  last_sum = tex.restore_sum_ms;
+  last_replay = tex.restore_replay_ms;
+  last_copy = tex.restore_copy_ms;
+  last_heap = tex.restore_from_heap;
+  last_card = tex.restore_from_card;
+  (void)last_loader;
 }
 
 int ProcessEvents(void) {

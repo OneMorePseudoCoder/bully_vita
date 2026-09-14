@@ -33,6 +33,10 @@ size_t vglMallocUsableSize(void *ptr);
 extern size_t fake_slot_usable[FAKE_SLOTS];
 extern size_t fake_next_usable_bonus;
 
+// Microseconds the driver will spend inside the next upload, for testing that a
+// stall is seen as a stall rather than averaged away.
+extern uint64_t fake_next_upload_delay_us;
+
 // How vitaGL itself sizes a pixel, which is not always what the loader's budget
 // estimate says.
 size_t fake_bpp(GLint internalformat, GLenum type);

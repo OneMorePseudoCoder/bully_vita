@@ -67,6 +67,8 @@ typedef struct {
   // so the question stops being answered by argument.
   int upload_driver_ms;
   int upload_loader_ms;
+  int upload_worst_ms; // the slowest single upload of the session
+  int upload_slow;     // uploads that took long enough to be a stall
   int key_hashed_mb;
   // A restore split into its parts. Heartbeats with fifteen or more of these
   // average 2.3 fps against 28.4 with none, and the per-restore cost the trace
