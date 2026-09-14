@@ -78,6 +78,7 @@ typedef struct {
   int deferred; // evictions it wanted to make and could not, for want of a copy
   int restore_deferred; // restores that found no memory and will be asked again
   int subimage_dropped; // writes lost because the texture would not come back
+  int upload_rejected;  // uploads vitaGL had no memory for, which draw as black
   int blocked; // consecutive frames it has wanted to free memory and freed none
 } TextureCacheStats;
 

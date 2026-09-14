@@ -203,6 +203,17 @@ static uint32_t restore_deferred_count;
 // Sub-image updates dropped because the texture was a placeholder and would not
 // come back. Each one is a visible thing the game drew that is not there.
 static uint32_t subimage_dropped;
+// Uploads vitaGL would not allocate for. Counted because this is the other way
+// a texture ends up black on screen and, until now, the only one that left no
+// trace at all: the game uploads, vitaGL has no memory and returns having
+// allocated nothing, we drop what we knew about the name, and the game draws
+// with a texture that has no pixels and never finds out. It looks exactly like
+// an eviction that did not come back, and the two are told apart only here.
+//
+// vglUseExtraMem(GL_FALSE) is what makes this a refusal rather than a silent
+// raid on the game's own heap, which was the leak this loader exists to stop.
+// That trade is the right one, but it has to be visible.
+static uint32_t upload_rejected;
 
 
 // vglMemFree refuses VGL_MEM_ALL: it is the enum terminator and the wrapper
@@ -813,6 +824,7 @@ void texture_cache_init(void) {
   ram_evicted_count = card_evicted_count = ram_restored_count = deferred_count = 0;
   restore_deferred_count = 0;
   subimage_dropped = 0;
+  upload_rejected = 0;
   memset(pool_start, 0, sizeof(pool_start));
 
   // The store lives next to the game's own files, in the data directory the
@@ -1775,6 +1787,16 @@ static void upload_finished(GLenum target, GLint level, GLsizei width, GLsizei h
   if (!texture_is_allocated()) {
     if (level == 0)
       texture_forget(id);
+    upload_rejected++;
+    // The first few in full, because what is being refused says which pool ran
+    // out and how big the thing was. After that the heartbeat's count is the
+    // whole story and a line per refusal would be the story told badly.
+    if (upload_rejected <= 8)
+      traceLog("texture cache: vitaGL refused a %dx%d upload (format %#x, %u KB), "
+               "ram %d cdram %d MB free\n",
+               (int)width, (int)height, (unsigned)internalformat, resident_bytes / 1024,
+               (int)(vglMemFree(VGL_MEM_RAM) / (1024 * 1024)),
+               (int)(vglMemFree((vglMemType)0) / (1024 * 1024)));
     return;
   }
 
@@ -1898,5 +1920,6 @@ void texture_cache_stats(TextureCacheStats *out) {
   out->deferred = (int)deferred_count;
   out->restore_deferred = (int)restore_deferred_count;
   out->subimage_dropped = (int)subimage_dropped;
+  out->upload_rejected = (int)upload_rejected;
   out->blocked = (int)blocked_frames;
 }

@@ -46,6 +46,7 @@ int main(void) {
   // Counting those left phantom bytes in the budget and let the cache "evict" a
   // texture that was never there, which actually allocated a placeholder.
   size_t before = tracked_bytes;
+  uint32_t rejected_before = upload_rejected;
   GLuint bad;
   glGenTexturesHook(1, &bad);
   glBindTextureHook(GL_TEXTURE_2D, bad);
@@ -54,7 +55,12 @@ int main(void) {
                              8192, source_bytes);
   assert(tracked_bytes == before && "a rejected upload must not be accounted");
   assert(!textures[bad].tracked && "a rejected upload must not be tracked");
-  printf("bad uploads  : rejected, not accounted                OK\n");
+  // And it has to be counted. A texture the driver would not allocate draws
+  // black, exactly like an eviction that never came back, and for six builds
+  // the two were indistinguishable in the log because this one was silent.
+  assert(upload_rejected == rejected_before + 1 &&
+         "an upload the driver refused was not counted");
+  printf("bad uploads  : rejected, not accounted, and counted   OK\n");
 
   // The store used to be one file carved into extents, and re-uploading a
   // texture appended rather than reusing its space, so a long session -- the
