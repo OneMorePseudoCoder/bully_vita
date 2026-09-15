@@ -1057,6 +1057,8 @@ int main(int argc, char *argv[]) {
            core_layout_fixed ? "rebalanced" : "as upstream",
            core_layout_fixed ? 1 : 0, core_layout_fixed ? 0 : 1,
            core_layout_fixed ? 0 : 2);
+  traceLog("threads: vitaGL collector core %d at priority 127, and the swap "
+           "waits on it\n", core_layout_fixed ? 0 : 1);
 
   capunlocker_enabled = check_capunlocker() >= 0;
   if (capunlocker_enabled) {
@@ -1106,7 +1108,19 @@ int main(int argc, char *argv[]) {
   vglSetTextureCacheFrequency(TEXTURE_CACHE_IDLE_FRAMES);
   vglSetSemanticBindingMode(VGL_MODE_POSTPONED);
   vglSetupRuntimeShaderCompiler(SHARK_OPT_UNSAFE, SHARK_ENABLE, SHARK_ENABLE, SHARK_ENABLE);
-  vglSetupGarbageCollector(127, 0x20000);
+  // vitaGL's collector goes with the light threads, not with the game.
+  //
+  // vglSwapBuffers waits on this thread before it presents -- sceKernelWaitSema
+  // on gc_mutex[1], which the collector signals when it has finished purging
+  // the last frame's freed buffers. So a collector that does not get scheduled
+  // does not just delay reclamation, it holds up the swap.
+  //
+  // It runs at priority 127, below everything else this port creates. Upstream
+  // put it on core 1 next to RenderThread, which is 13% busy, and that was
+  // fine. Moving GameMain to core 1 would have left the thread the frame waits
+  // on sharing a core with a priority 64 thread at 40% and better, which is the
+  // one place it must not be.
+  vglSetupGarbageCollector(127, core_layout_fixed ? 0x10000 : 0x20000);
   vglInitExtended(0, SCREEN_W, SCREEN_H, MEMORY_VITAGL_THRESHOLD_MB * 1024 * 1024, SCE_GXM_MULTISAMPLE_2X);
 
   // Do not let textures overflow into the newlib heap.

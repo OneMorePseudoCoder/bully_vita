@@ -145,16 +145,21 @@
 
 // What comes out of it, against the crash dump's figures over 1980 seconds:
 //
-//   core 0   RenderThread 13% + CDStreamThread 4% + SceGxmDisplayQueue 1%
-//   core 1   GameMain 40%, and vitaGL's collector at priority 127
+//   core 0   RenderThread 13% + CDStreamThread 4% + display queue 1% + the
+//            vitaGL collector
+//   core 1   GameMain 40%, alone
 //   core 2   the frame thread 45%
 //   core 3   OpenAL 10% + Sound 4%
 //
-// GameMain is priority 64 and the only other thing on its core is priority
-// 127, which it outranks and which spent 2.7 seconds of those 1980. Everything
-// on core 0 is light, and the streaming thread is 65 there -- below both the
-// renderer and the display queue, so it can take cycles but cannot take a turn
-// from either.
+// Core 1 is GameMain and nothing else. Everything on core 0 is light -- 18%
+// between the four of them -- and the two that are not priority 64 sit below
+// the two that are, so neither the renderer nor the display queue can be made
+// to wait by the streaming thread or the collector.
+//
+// The collector matters more than its 0.1% suggests: vglSwapBuffers waits on
+// it before presenting, so it is the one thread that must never be stuck
+// behind a busy one. Upstream had it on core 1 beside a 13% renderer, which
+// was fine; core 1 is no longer that core.
 //
 // SceGxmDisplayQueue is pinned to core 0 at priority 64 and there is no way to
 // move it: it is created inside SceGxm, SceGxmInitializeParams has no affinity
