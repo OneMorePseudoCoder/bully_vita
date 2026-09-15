@@ -179,6 +179,11 @@
 // for years, and one run either way settles it better than an argument does.
 #define CORE_LAYOUT_DISABLE_PATH DATA_PATH "/" "no_corefix"
 
+// Opt IN, unlike every other switch here. Hooking the engine's own frame
+// methods means relocating their prologues, and a shipping build has no reason
+// to carry that risk: create this file to ask for the measurement.
+#define FRAME_PROFILE_PATH DATA_PATH "/" "frame_profile"
+
 // How long a vertex buffer must go unlocked before the loader takes back the
 // CPU-side copy of its data. The game keeps that copy for the life of the
 // buffer so it can be locked again without reading back from the GPU, which is

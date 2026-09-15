@@ -52,6 +52,7 @@
 #include "openal_patch.h"
 
 #include "streaming_patch.h"
+#include "frame_profile.h"
 #include "texture_cache.h"
 #include "vertex_cache.h"
 
@@ -317,6 +318,7 @@ static void memory_heartbeat(void) {
   last_evict_holds = tex.evict_lock_holds;
   (void)last_loader;
 
+  frame_profile_report();
   thread_report(span_us);
 }
 
@@ -610,6 +612,11 @@ void patch_game(void) {
   BullyApplication__OrigLoadSlot = (void *)so_symbol(&bully_mod, "_ZN16BullyApplication12OrigLoadSlotE11MemCardSlot");
   OS_FileGetDate = (void *)so_symbol(&bully_mod, "_Z14OS_FileGetDate14OSFileDataAreaPKc");
   hook_addr(so_symbol(&bully_mod, "_ZN16BullyApplication12OrigContinueEv"), (uintptr_t)BullyApplication__OrigContinue);
+
+  // Last, and only when asked for. It relocates the prologues it displaces, and
+  // a literal load is relocated by value -- which is only the right value once
+  // so_relocate has run, as it has by the time patch_game is called.
+  frame_profile_init();
 }
 
 extern void *__cxa_atexit;

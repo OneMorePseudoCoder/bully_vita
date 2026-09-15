@@ -14,7 +14,7 @@ CFLAGS := -idirafter $(VITASDK)/arm-vita-eabi/include -I../loader -I. \
           -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -g -O1
 LDFLAGS := -pthread
 
-TESTS := test_budget test_revisit test_regress test_no_backing_store test_vertex_cache test_concurrency
+TESTS := test_budget test_revisit test_regress test_no_backing_store test_vertex_cache test_concurrency test_prologue
 FAKES := fake_vitagl.c fake_vita_os.c
 
 .PHONY: all check clean
@@ -25,6 +25,12 @@ all: check
 $(OUT)/test_vertex_cache: test_vertex_cache.c fake_vertex_env.h ../loader/vertex_cache.c ../loader/config.h
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $< $(LDFLAGS) -o $@
+
+# The prologue relocator stands alone too: it is plain byte twiddling with no
+# GL and no OS in it, which is the point of it being in its own file.
+$(OUT)/test_prologue: test_prologue.c ../loader/prologue.c ../loader/prologue.h
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS) $< -o $@
 
 $(OUT)/%: %.c $(FAKES) harness.h fake_vitagl.h ../loader/texture_cache.c ../loader/config.h
 	@mkdir -p $(OUT)
