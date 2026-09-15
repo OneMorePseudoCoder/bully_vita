@@ -127,8 +127,7 @@
 // the texture cache.
 #define STREAMING_DISABLE_PATH DATA_PATH "/" "no_streamfix"
 
-// Puts CDStreamThread back on core 2, where upstream has it, sharing with the
-// thread that runs the frame.
+// Puts every thread back where upstream has it.
 //
 // Upstream pins the main thread to core 2 at priority 127 and CDStreamThread to
 // core 2 at priority 65. Lower is stronger on this machine, so every time the
@@ -141,10 +140,39 @@
 // it sits below RenderThread's 64 rather than above the main thread's 127, so
 // what gets held up is the streaming rather than the frame.
 //
-// The toggle is here because this is a change to an assignment the port has
-// shipped with for years, and one run either way settles it better than an
-// argument does.
-#define STREAM_CORE_DISABLE_PATH DATA_PATH "/" "no_streamcore"
+// And GameMain swaps with RenderThread, so that the thread running the game's
+// logic has a core to itself.
+
+// What comes out of it, against the crash dump's figures over 1980 seconds:
+//
+//   core 0   RenderThread 13% + CDStreamThread 4% + SceGxmDisplayQueue 1%
+//   core 1   GameMain 40%, and vitaGL's collector at priority 127
+//   core 2   the frame thread 45%
+//   core 3   OpenAL 10% + Sound 4%
+//
+// GameMain is priority 64 and the only other thing on its core is priority
+// 127, which it outranks and which spent 2.7 seconds of those 1980. Everything
+// on core 0 is light, and the streaming thread is 65 there -- below both the
+// renderer and the display queue, so it can take cycles but cannot take a turn
+// from either.
+//
+// SceGxmDisplayQueue is pinned to core 0 at priority 64 and there is no way to
+// move it: it is created inside SceGxm, SceGxmInitializeParams has no affinity
+// field, and nothing in user space can enumerate threads to find its id. It
+// shares that core with GameMain, also priority 64 -- and equal priority is
+// round robin, so the thread that presents a finished frame takes its turn
+// behind the thread running the game's logic on a core the dump has at 40% on
+// average and the console shows at 91% in play.
+//
+// The display queue cannot be moved away from GameMain. GameMain can be moved
+// away from the display queue, which is the same thing and costs a constant
+// rather than a hook in somebody else's import table. RenderThread goes the
+// other way: it is 13%, and on core 0 it keeps the presenting thread company
+// without crowding it.
+//
+// The toggle is here because these are assignments the port has shipped with
+// for years, and one run either way settles it better than an argument does.
+#define CORE_LAYOUT_DISABLE_PATH DATA_PATH "/" "no_corefix"
 
 // How long a vertex buffer must go unlocked before the loader takes back the
 // CPU-side copy of its data. The game keeps that copy for the life of the

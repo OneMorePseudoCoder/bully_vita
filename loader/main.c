@@ -64,9 +64,9 @@ unsigned int _oal_thread_priority;
 unsigned int _oal_thread_affinity;
 
 int capunlocker_enabled = 0;
-// Whether CDStreamThread goes to core 1 instead of sharing core 2 with the
-// thread that runs the frame. See STREAM_CORE_DISABLE_PATH.
-static int stream_thread_off_frame_core = 1;
+// Whether the threads are placed as measurement suggests rather than as
+// upstream left them. See CORE_LAYOUT_DISABLE_PATH.
+static int core_layout_fixed = 1;
 
 // The threads this loader creates, so the heartbeat can say what each of them
 // actually did with its core.
@@ -411,13 +411,13 @@ void *OS_ThreadLaunch(int (* func)(), void *arg, int cpu, char *name, int unused
   if (capunlocker_enabled) {
     if (strcmp(name, "GameMain") == 0) {
       vita_priority = 64;
-      vita_affinity = 0x10000;
+      vita_affinity = core_layout_fixed ? 0x20000 : 0x10000;
     } else if (strcmp(name, "RenderThread") == 0) {
       vita_priority = 64;
-      vita_affinity = 0x20000;
+      vita_affinity = core_layout_fixed ? 0x10000 : 0x20000;
     } else if (strcmp(name, "CDStreamThread") == 0) {
       vita_priority = 65;
-      vita_affinity = stream_thread_off_frame_core ? 0x20000 : 0x40000;
+      vita_affinity = core_layout_fixed ? 0x10000 : 0x40000;
     } else if (strcmp(name, "Sound") == 0) {
       vita_priority = 65;
       vita_affinity = 0x80000;
@@ -428,13 +428,13 @@ void *OS_ThreadLaunch(int (* func)(), void *arg, int cpu, char *name, int unused
   } else {
     if (strcmp(name, "GameMain") == 0) {
       vita_priority = 65;
-      vita_affinity = 0x10000;
+      vita_affinity = core_layout_fixed ? 0x20000 : 0x10000;
     } else if (strcmp(name, "RenderThread") == 0) {
       vita_priority = 64;
-      vita_affinity = 0x20000;
+      vita_affinity = core_layout_fixed ? 0x10000 : 0x20000;
     } else if (strcmp(name, "CDStreamThread") == 0) {
       vita_priority = 65;
-      vita_affinity = stream_thread_off_frame_core ? 0x20000 : 0x40000;
+      vita_affinity = core_layout_fixed ? 0x10000 : 0x40000;
     } else if (strcmp(name, "Sound") == 0) {
       vita_priority = 65;
       vita_affinity = 0x20000;
@@ -1051,9 +1051,12 @@ int main(int argc, char *argv[]) {
            BACKUP_FORMAT);
 
   track_thread(sceKernelGetThreadId(), "frame");
-  stream_thread_off_frame_core = !file_exists(STREAM_CORE_DISABLE_PATH);
-  traceLog("threads: frame on core 2 at priority 127, streaming on core %d\n",
-           stream_thread_off_frame_core ? 1 : 2);
+  core_layout_fixed = !file_exists(CORE_LAYOUT_DISABLE_PATH);
+  traceLog("threads: %s -- frame core 2, game core %d, render core %d, "
+           "streaming core %d, display queue core 0 (fixed)\n",
+           core_layout_fixed ? "rebalanced" : "as upstream",
+           core_layout_fixed ? 1 : 0, core_layout_fixed ? 0 : 1,
+           core_layout_fixed ? 0 : 2);
 
   capunlocker_enabled = check_capunlocker() >= 0;
   if (capunlocker_enabled) {
