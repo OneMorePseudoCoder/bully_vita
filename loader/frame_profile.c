@@ -194,16 +194,54 @@ void frame_profile_init(void) {
   if (sceIoGetstat(FRAME_PROFILE_PATH, &stat) < 0)
     return;
 
-  SceUID block = kuKernelAllocMemBlock("bully_tramp", SCE_KERNEL_MEMBLOCK_TYPE_USER_RX,
-                                       ALIGN_MEM(PROFILE_SLOTS * TRAMPOLINE_BYTES, 0x1000), NULL);
+  // Somewhere to put the relocated prologues that the CPU will execute.
+  //
+  // Two ways, because the first one failed on hardware with a NULL options
+  // pointer and there is no way to try again quickly: so_util asks kubridge for
+  // a kernel RX block and always hands it a zeroed option struct, so do that,
+  // and if it still says no, take an ordinary user RW block -- which needs no
+  // kubridge at all -- and have kubridge mark it executable afterwards. The
+  // trace says which worked, so the next log settles it.
+  const SceSize tramp_size = ALIGN_MEM(PROFILE_SLOTS * TRAMPOLINE_BYTES, 0x1000);
+  SceKernelAllocMemBlockKernelOpt opt;
+  memset(&opt, 0, sizeof(opt));
+  opt.size = sizeof(opt);
   void *base = NULL;
-  if (block < 0 || sceKernelGetMemBlockBase(block, &base) < 0 || !base) {
-    traceLog("frame profile: no executable memory for the trampolines\n");
-    return;
+  int writable = 0;
+
+  SceUID block = kuKernelAllocMemBlock("bully_tramp", SCE_KERNEL_MEMBLOCK_TYPE_USER_RX, tramp_size,
+                                       &opt);
+  int got_base = block >= 0 ? sceKernelGetMemBlockBase(block, &base) : block;
+  if (block < 0 || got_base < 0 || !base) {
+    traceLog("frame profile: kubridge would not give an RX block (alloc %#x, base %#x), "
+             "trying RW and a protect\n",
+             (unsigned)block, (unsigned)got_base);
+    base = NULL;
+    block = sceKernelAllocMemBlock("bully_tramp", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, tramp_size,
+                                   NULL);
+    got_base = block >= 0 ? sceKernelGetMemBlockBase(block, &base) : block;
+    if (block < 0 || got_base < 0 || !base) {
+      traceLog("frame profile: no memory for the trampolines at all (alloc %#x, base %#x)\n",
+               (unsigned)block, (unsigned)got_base);
+      return;
+    }
+    // Write through the ordinary pointer while it is still writable, and turn
+    // it executable once every trampoline is in place.
+    writable = 1;
   }
 
-  int hooked = 0;
+  // Two passes, and the hooks go in the second one.
+  //
+  // hook_addr cannot be undone: it overwrites the first instruction and the
+  // bytes it displaced only exist in the trampoline. So nothing is patched
+  // until every trampoline is written and the memory holding them is known to
+  // be executable. Patching first and failing to protect afterwards would leave
+  // the game jumping into memory it is not allowed to run, which is a crash on
+  // the first frame rather than a missing measurement.
+  uintptr_t entries[PROFILE_SLOTS];
+  int ready = 0;
   for (int i = 0; i < PROFILE_SLOTS; i++) {
+    entries[i] = 0;
     uintptr_t entry = so_symbol(&bully_mod, targets[i].symbol);
     if (!entry) {
       traceLog("frame profile: %s is not in this build\n", targets[i].shown);
@@ -224,16 +262,40 @@ void frame_profile_init(void) {
       continue;
     }
     uint8_t *tramp = (uint8_t *)base + i * TRAMPOLINE_BYTES;
-    kuKernelCpuUnrestrictedMemcpy(tramp, copy, written);
+    if (writable)
+      memcpy(tramp, copy, written);
+    else
+      kuKernelCpuUnrestrictedMemcpy(tramp, copy, written);
     slots[i].trampoline = (uintptr_t)tramp | (thumb ? 1u : 0u);
+    entries[i] = entry;
+    ready++;
+  }
+
+  if (writable) {
+    int prot = kuKernelMemProtect(base, tramp_size, KU_KERNEL_PROT_READ | KU_KERNEL_PROT_EXEC);
+    if (prot < 0) {
+      // Nothing is patched yet, so this costs the measurement and nothing else.
+      traceLog("frame profile: could not make the trampolines executable (%#x), not hooking\n",
+               (unsigned)prot);
+      sceKernelFreeMemBlock(block);
+      return;
+    }
+  }
+  kuKernelFlushCaches(base, tramp_size);
+
+  int hooked = 0;
+  for (int i = 0; i < PROFILE_SLOTS; i++) {
+    if (!entries[i])
+      continue;
     slots[i].live = 1;
-    hook_addr(entry, (uintptr_t)thunks[i]);
+    hook_addr(entries[i], (uintptr_t)thunks[i]);
     hooked++;
   }
-  kuKernelFlushCaches(base, PROFILE_SLOTS * TRAMPOLINE_BYTES);
+  (void)ready;
 
   profiling = hooked > 0;
-  traceLog("frame profile: %d of %d frame methods hooked, timing on\n", hooked, PROFILE_SLOTS);
+  traceLog("frame profile: %d of %d frame methods hooked from %s memory, timing on\n", hooked,
+           PROFILE_SLOTS, writable ? "protected RW" : "kubridge RX");
 }
 
 void frame_profile_report(void) {
