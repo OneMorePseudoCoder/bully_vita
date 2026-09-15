@@ -68,6 +68,62 @@ int capunlocker_enabled = 0;
 // thread that runs the frame. See STREAM_CORE_DISABLE_PATH.
 static int stream_thread_off_frame_core = 1;
 
+// The threads this loader creates, so the heartbeat can say what each of them
+// actually did with its core.
+//
+// sceKernelGetThreadInfo reports runClocks: microseconds a thread has spent
+// executing, which is the same figure a crash dump carries and the only honest
+// answer to "is that core busy or is something on it waiting". A percentage on
+// a monitor is an instant; this is the whole interval.
+//
+// Only the threads we create, because those are the ones whose SceUID we are
+// given. SceGxmDisplayQueue is made inside SceGxm and we never see its id --
+// the crash dump puts it at 1.1% of core 0, against GameMain's 40%, which is
+// the comparison that matters when deciding whether anything on core 0 is
+// starved or whether core 0 is simply working.
+#define TRACKED_THREADS 8
+static struct {
+  SceUID thid;
+  const char *name;
+  uint64_t last_run_us;
+} tracked_threads[TRACKED_THREADS];
+static int tracked_thread_count;
+
+static void track_thread(SceUID thid, const char *name) {
+  if (thid < 0 || tracked_thread_count >= TRACKED_THREADS)
+    return;
+  tracked_threads[tracked_thread_count].thid = thid;
+  tracked_threads[tracked_thread_count].name = name;
+  tracked_thread_count++;
+}
+
+// One line per heartbeat: what share of a core each thread used over the
+// interval, and which core it was on when it was last asked.
+static void thread_report(uint32_t span_us) {
+  char line[512];
+  int at = 0;
+  for (int i = 0; i < tracked_thread_count && at < (int)sizeof(line) - 48; i++) {
+    SceKernelThreadInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = sizeof(info);
+    if (sceKernelGetThreadInfo(tracked_threads[i].thid, &info) < 0)
+      continue;
+    uint64_t run_us = (uint64_t)info.runClocks;
+    uint64_t used = run_us - tracked_threads[i].last_run_us;
+    tracked_threads[i].last_run_us = run_us;
+    int core = info.currentCpuAffinityMask == 0x10000   ? 0
+               : info.currentCpuAffinityMask == 0x20000 ? 1
+               : info.currentCpuAffinityMask == 0x40000 ? 2
+               : info.currentCpuAffinityMask == 0x80000 ? 3
+                                                        : -1;
+    at += snprintf(line + at, sizeof(line) - at, "%s%s %d%% core%d",
+                   at ? " | " : "", tracked_threads[i].name,
+                   (int)(span_us ? used * 100 / span_us : 0), core);
+  }
+  if (at)
+    traceLog("cpu: %s\n", line);
+}
+
 SceTouchPanelInfo panelInfoFront;
 
 so_module bully_mod;
@@ -256,6 +312,8 @@ static void memory_heartbeat(void) {
   last_heap_ms = tex.tick_heap_ms;
   last_heap_calls = tex.tick_heap_calls;
   (void)last_loader;
+
+  thread_report(span_us);
 }
 
 int ProcessEvents(void) {
@@ -388,6 +446,7 @@ void *OS_ThreadLaunch(int (* func)(), void *arg, int cpu, char *name, int unused
 
   SceUID thid = sceKernelCreateThread(name, (SceKernelThreadEntry)thread_stub, vita_priority, 128 * 1024, 0, vita_affinity, NULL);
   if (thid >= 0) {
+    track_thread(thid, name);
     char *out = malloc(0x48);
     *(int *)(out + 0x24) = thid;
 
@@ -991,6 +1050,7 @@ int main(int argc, char *argv[]) {
   traceLog("---- Bully loader %s, store format %d ----\n", LOADER_BUILD_ID,
            BACKUP_FORMAT);
 
+  track_thread(sceKernelGetThreadId(), "frame");
   stream_thread_off_frame_core = !file_exists(STREAM_CORE_DISABLE_PATH);
   traceLog("threads: frame on core 2 at priority 127, streaming on core %d\n",
            stream_thread_off_frame_core ? 1 : 2);
