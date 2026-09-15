@@ -21,7 +21,34 @@
 #include <string.h>
 
 #include <stdlib.h>
+#include <unistd.h>
 #include "fake_vitagl.h"
+
+// The invariant the loader's GL lock exists to hold: one thread inside the
+// driver at a time.
+//
+// vitaGL has one global binding table and one allocator per pool, so a second
+// thread arriving between another thread reading the binding and using it is
+// the bug a hardware dump caught -- the game uploading on its streaming thread
+// while the cache's tick freed a texture out from under it, which left a freed
+// block full of pixels for the allocator to walk its free list into.
+//
+// Off unless a test asks for it: the delay is what makes an overlap wide enough
+// to be seen reliably, and paying it in every other test would be absurd.
+unsigned fake_gl_delay_us;
+unsigned fake_gl_overlaps;
+static int fake_gl_inside;
+
+static void fake_gl_enter(void) {
+  if (__atomic_add_fetch(&fake_gl_inside, 1, __ATOMIC_SEQ_CST) != 1)
+    __atomic_add_fetch(&fake_gl_overlaps, 1u, __ATOMIC_SEQ_CST);
+  if (fake_gl_delay_us)
+    usleep(fake_gl_delay_us);
+}
+
+static void fake_gl_leave(void) {
+  __atomic_sub_fetch(&fake_gl_inside, 1, __ATOMIC_SEQ_CST);
+}
 
 size_t fake_slot_bytes[FAKE_SLOTS];
 void *fake_slot_data[FAKE_SLOTS];
@@ -168,6 +195,7 @@ static void set_slot(GLuint id, size_t size, uint32_t content) {
 }
 
 void glGenTextures(GLsizei n, GLuint *res) {
+  fake_gl_enter();
   for (GLsizei i = 0; i < n; i++) {
     GLuint id = 0;
     // vitaGL hands back the lowest free slot, so names really are recycled.
@@ -181,16 +209,23 @@ void glGenTextures(GLsizei n, GLuint *res) {
     fake_slot_content[id] = 0;
     res[i] = id;
   }
+  fake_gl_leave();
 }
 
 void glDeleteTextures(GLsizei n, const GLuint *ids) {
+  fake_gl_enter();
   for (GLsizei i = 0; i < n; i++) {
     set_slot(ids[i], 0, 0);
     fake_slot_alive[ids[i]] = 0;
   }
+  fake_gl_leave();
 }
 
-void glBindTexture(GLenum target, GLuint texture) { fake_bound = texture; }
+void glBindTexture(GLenum target, GLuint texture) {
+  fake_gl_enter();
+  fake_bound = texture;
+  fake_gl_leave();
+}
 void glActiveTexture(GLenum texture) { (void)texture; }
 void glTexParameteri(GLenum target, GLenum pname, GLint param) { }
 void glTexParameterf(GLenum target, GLenum pname, GLfloat param) { }
@@ -201,41 +236,52 @@ void glTexParameterf(GLenum target, GLenum pname, GLfloat param) { }
 size_t fake_last_subimage_slot_bytes;
 void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
                      GLsizei height, GLenum format, GLenum type, const GLvoid *pixels) {
+  fake_gl_enter();
   fake_last_subimage_slot_bytes = fake_slot_bytes[fake_bound];
   if (fake_slot_data[fake_bound] && fake_slot_bytes[fake_bound] >= sizeof(uint32_t))
     *(uint32_t *)fake_slot_data[fake_bound] = fingerprint(pixels, (size_t)width * height * 4);
+  fake_gl_leave();
 }
 void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture,
                             GLint level) { }
 
 void glTexImage2D(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height,
                   GLint border, GLenum format, GLenum type, const GLvoid *data) {
+  fake_gl_enter();
   assert(fake_slot_alive[fake_bound]);
   fake_upload_delay();
-  if (fake_reject_next_upload) { fake_reject_next_upload = 0; set_slot(fake_bound, 0, 0); return; }
-  size_t face = (size_t)((width + 7) & ~7) * height * fake_bpp(internalFormat, type);
-  // A cube map is six faces in one allocation behind a single name, and it is
-  // reachable through vglGetTexDataPointer just like a flat texture is. Getting
-  // this right is what makes a cache that mistakes one for a 2D texture fail.
-  if (target != GL_TEXTURE_2D)
-    set_slot(fake_bound, face * 6, CUBE_CONTENT);
-  else
-    set_slot(fake_bound, face, fingerprint(data, (size_t)width * height * 4));
+  if (fake_reject_next_upload) {
+    fake_reject_next_upload = 0;
+    set_slot(fake_bound, 0, 0);
+  } else {
+    size_t face = (size_t)((width + 7) & ~7) * height * fake_bpp(internalFormat, type);
+    // A cube map is six faces in one allocation behind a single name, and it is
+    // reachable through vglGetTexDataPointer just like a flat texture is. Getting
+    // this right is what makes a cache that mistakes one for a 2D texture fail.
+    if (target != GL_TEXTURE_2D)
+      set_slot(fake_bound, face * 6, CUBE_CONTENT);
+    else
+      set_slot(fake_bound, face, fingerprint(data, (size_t)width * height * 4));
+  }
+  fake_gl_leave();
 }
 
 void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLsizei width,
                             GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data) {
+  fake_gl_enter();
   assert(fake_slot_alive[fake_bound]);
   fake_upload_delay();
-  if (fake_reject_next_upload) { fake_reject_next_upload = 0; set_slot(fake_bound, 0, 0); return; }
-  if (target != GL_TEXTURE_2D) {
+  if (fake_reject_next_upload) {
+    fake_reject_next_upload = 0;
+    set_slot(fake_bound, 0, 0);
+  } else if (target != GL_TEXTURE_2D) {
     set_slot(fake_bound, (size_t)imageSize * 6, CUBE_CONTENT);
-    return;
-  }
-  if (level == 0)
+  } else if (level == 0) {
     set_slot(fake_bound, imageSize, fingerprint(data, imageSize));
-  else
+  } else {
     set_slot(fake_bound, fake_slot_bytes[fake_bound] + imageSize, fake_slot_content[fake_bound]);
+  }
+  fake_gl_leave();
 }
 
 // Non-NULL exactly when the driver holds data for the bound texture, which is
@@ -244,8 +290,11 @@ void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalFormat, G
 // this pointer when it evicts, and writes back through it when it restores,
 // the way vitaGL hands out its own swizzled copy.
 void *vglGetTexDataPointer(GLenum target) {
-  if (!fake_slot_bytes[fake_bound])
+  fake_gl_enter();
+  if (!fake_slot_bytes[fake_bound]) {
+    fake_gl_leave();
     return NULL;
+  }
   if (!fake_slot_data[fake_bound]) {
     // A guard past the end, so that anything copying by a size other than the
     // one this buffer was made with is caught rather than quietly scribbling
@@ -262,7 +311,9 @@ void *vglGetTexDataPointer(GLenum target) {
         *(uint32_t *)fake_slot_data[fake_bound] = fake_slot_content[fake_bound];
     }
   }
-  return fake_slot_data[fake_bound];
+  void *held = fake_slot_data[fake_bound];
+  fake_gl_leave();
+  return held;
 }
 
 // What the driver really allocated for that pointer, which is the number the

@@ -322,6 +322,41 @@ int sceKernelWaitSema(SceUID semaid, int signal, SceUInt *timeout) {
   return 0;
 }
 int sceKernelDeleteSema(SceUID semaid) { return 0; }
+
+// The loader's GL lock. Recursive, because a bind that triggers a restore can
+// reach the eviction path, and both take it.
+static pthread_mutex_t *lw_mutex_of(SceKernelLwMutexWork *work) {
+  return *(pthread_mutex_t **)work;
+}
+
+int sceKernelCreateLwMutex(SceKernelLwMutexWork *work, const char *name, unsigned int attr,
+                           int initCount, const SceKernelLwMutexOptParam *opt) {
+  pthread_mutexattr_t a;
+  pthread_mutexattr_init(&a);
+  pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+  pthread_mutex_t *m = malloc(sizeof(*m));
+  pthread_mutex_init(m, &a);
+  pthread_mutexattr_destroy(&a);
+  *(pthread_mutex_t **)work = m;
+  return 0;
+}
+
+int sceKernelDeleteLwMutex(SceKernelLwMutexWork *work) {
+  pthread_mutex_destroy(lw_mutex_of(work));
+  free(lw_mutex_of(work));
+  *(pthread_mutex_t **)work = NULL;
+  return 0;
+}
+
+int sceKernelLockLwMutex(SceKernelLwMutexWork *work, int lockCount, unsigned int *timeout) {
+  while (lockCount-- > 0) pthread_mutex_lock(lw_mutex_of(work));
+  return 0;
+}
+
+int sceKernelUnlockLwMutex(SceKernelLwMutexWork *work, int unlockCount) {
+  while (unlockCount-- > 0) pthread_mutex_unlock(lw_mutex_of(work));
+  return 0;
+}
 int sceKernelDelayThread(SceUInt delay) { return usleep(delay); }
 
 #define MAX_THREADS 8

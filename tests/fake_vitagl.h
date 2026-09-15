@@ -37,6 +37,13 @@ extern size_t fake_next_usable_bonus;
 // stall is seen as a stall rather than averaged away.
 extern uint64_t fake_next_upload_delay_us;
 
+// One thread at a time inside the driver, which is what vitaGL needs and does
+// not enforce. Set fake_gl_delay_us to widen every entry point into a window an
+// overlapping thread can be caught in; fake_gl_overlaps counts the threads that
+// found somebody already in there.
+extern unsigned fake_gl_delay_us;
+extern unsigned fake_gl_overlaps;
+
 // How many times the loader has asked vitaGL how much memory is left. On
 // hardware each one walks a free list and costs milliseconds, so the count is
 // the cost.

@@ -74,6 +74,10 @@ typedef struct {
   // being empty.
   int tick_pool_ms, tick_pool_calls;
   int tick_heap_ms, tick_heap_calls;
+  // What the eviction lock costs the game. Evicting a texture shuts the game's
+  // own threads out of vitaGL for as long as it takes, so the total, the count
+  // and the worst single hold are the answer to "is the lock the new stall".
+  int evict_lock_ms, evict_lock_holds, evict_lock_worst_ms;
   int upload_worst_ms; // the slowest single upload of the session
   int upload_slow;     // uploads that took long enough to be a stall
   int key_hashed_mb;

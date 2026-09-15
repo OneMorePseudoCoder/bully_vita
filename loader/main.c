@@ -283,9 +283,10 @@ static void memory_heartbeat(void) {
   static int last_driver, last_loader, last_slow, last_open, last_read;
   static int last_sum, last_replay, last_copy, last_heap, last_card;
   static int last_pool_ms, last_pool_calls, last_heap_ms, last_heap_calls;
+  static int last_evict_ms, last_evict_holds;
   traceLog("cost: upload %d ms (worst %d ms, %d over %d) | restore %d ms = "
            "open %d read %d sum %d replay %d copy %d | back from heap %d card %d | "
-           "tick pool %d ms/%d heap %d ms/%d\n",
+           "tick pool %d ms/%d heap %d ms/%d | evict lock %d ms/%d (worst %d ms)\n",
            tex.upload_driver_ms - last_driver, tex.upload_worst_ms,
            tex.upload_slow - last_slow, TEXTURE_SLOW_UPLOAD_MS,
            (tex.restore_open_ms - last_open) + (tex.restore_read_ms - last_read) +
@@ -296,7 +297,8 @@ static void memory_heartbeat(void) {
            tex.restore_copy_ms - last_copy, tex.restore_from_heap - last_heap,
            tex.restore_from_card - last_card, tex.tick_pool_ms - last_pool_ms,
            tex.tick_pool_calls - last_pool_calls, tex.tick_heap_ms - last_heap_ms,
-           tex.tick_heap_calls - last_heap_calls);
+           tex.tick_heap_calls - last_heap_calls, tex.evict_lock_ms - last_evict_ms,
+           tex.evict_lock_holds - last_evict_holds, tex.evict_lock_worst_ms);
   last_driver = tex.upload_driver_ms;
   last_loader = tex.upload_loader_ms;
   last_slow = tex.upload_slow;
@@ -311,6 +313,8 @@ static void memory_heartbeat(void) {
   last_pool_calls = tex.tick_pool_calls;
   last_heap_ms = tex.tick_heap_ms;
   last_heap_calls = tex.tick_heap_calls;
+  last_evict_ms = tex.evict_lock_ms;
+  last_evict_holds = tex.evict_lock_holds;
   (void)last_loader;
 
   thread_report(span_us);

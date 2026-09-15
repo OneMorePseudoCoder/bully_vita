@@ -14,7 +14,7 @@ CFLAGS := -idirafter $(VITASDK)/arm-vita-eabi/include -I../loader -I. \
           -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -g -O1
 LDFLAGS := -pthread
 
-TESTS := test_budget test_revisit test_regress test_no_backing_store test_vertex_cache
+TESTS := test_budget test_revisit test_regress test_no_backing_store test_vertex_cache test_concurrency
 FAKES := fake_vitagl.c fake_vita_os.c
 
 .PHONY: all check clean

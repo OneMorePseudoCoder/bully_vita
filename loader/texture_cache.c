@@ -235,6 +235,11 @@ static uint32_t store_unsound;
 // it and this uses one field of the result.
 unsigned tick_heap_us, tick_heap_calls, tick_pool_us, tick_pool_calls;
 
+// How long an eviction shuts the game out of vitaGL for. The lock below is the
+// fix for a crash, and the cost of any lock is the time somebody else waits on
+// it, so the total and the worst single hold are reported rather than assumed.
+unsigned evict_lock_us, evict_lock_worst_us, evict_lock_holds;
+
 static unsigned tick_now_us(void) {
   SceKernelSysClock now;
   sceKernelGetProcessTime(&now);
@@ -862,8 +867,71 @@ static void purge_store(void) {
   sceIoRmdir(TEXTURE_CACHE_DIR);
 }
 
+/*
+ * The one lock
+ *
+ * Three threads drive vitaGL in this port and only two of them know about each
+ * other. A core dump taken on hardware has the game's CDStreamThread inside
+ * glCompressedTexImage2D -- through the hook below, on the game's own thread --
+ * holding a pthread mutex that RenderThread is parked on, while this loader's
+ * texture_cache_tick was running evict_textures on the main thread, which takes
+ * no mutex at all. vitaGL keeps one global binding table (server_texture_unit
+ * and texture_units[] in its textures.c), so an eviction's glBindTexture on the
+ * main thread lands in the middle of the game's bind-then-upload pair, and the
+ * glTexImage2D that follows frees a buffer the game is still writing into.
+ *
+ * What that leaves behind is a freed block full of texture pixels. A freed
+ * block is where the allocator keeps its own list pointers, so the next
+ * allocation out of that pool walks its tree into pixel data and dereferences
+ * it. That is the crash in the dump: sceClibMspaceMemalign, on the CDRAM pool,
+ * following 0xde0fa8e5 read out of a page of compressed texture.
+ *
+ * The allocator itself is not the problem and was ruled out: the dump's mutex
+ * list shows SceLibcMspaceS06000000_62000000 -- vitaGL's CDRAM mspace -- with a
+ * kernel mutex of its own, held by the uploading thread. Sony's mspaces are
+ * thread safe. What is not thread safe is two threads deciding which texture is
+ * bound and when its storage goes away.
+ *
+ * So everything this file does to vitaGL happens under one lock: every hook
+ * below, and the eviction work the tick does. The game keeps its own mutex and
+ * takes ours inside it, never the other way round, so there is one ordering and
+ * no cycle. Recursive because glBindTextureHook can reach evict_textures.
+ *
+ * The card is the one thing nested inside it: an eviction reads and writes the
+ * store while holding this. That was already true of a restore, which does its
+ * reading from inside glBindTextureHook on the game's own thread, and it is safe
+ * in the same way -- the game reads its files and then uploads, never one inside
+ * the other, so nothing ever wants this lock while holding a file lock.
+ *
+ * The cost of a lock is whoever waits on it, so evict_lock_us below measures it
+ * rather than assuming it away, and the heartbeat reports it.
+ */
+static SceKernelLwMutexWork gl_lock_work;
+static int gl_lock_ready;
+
+static void gl_lock(void) {
+  if (gl_lock_ready)
+    sceKernelLockLwMutex(&gl_lock_work, 1, NULL);
+}
+
+static void gl_unlock(void) {
+  if (gl_lock_ready)
+    sceKernelUnlockLwMutex(&gl_lock_work, 1);
+}
+
 void texture_cache_init(void) {
   SceIoStat stat;
+  // Before anything else, and before the disable check: the hooks are installed
+  // whether or not the cache is doing any work, and they all take this.
+  if (!gl_lock_ready) {
+    if (sceKernelCreateLwMutex(&gl_lock_work, "bully texture gl",
+                               0x2000 | SCE_KERNEL_MUTEX_ATTR_RECURSIVE, 0, NULL) >= 0)
+      gl_lock_ready = 1;
+    else
+      traceLog("texture cache: could not create the GL lock -- the tick and the "
+               "game will be sharing vitaGL unguarded\n");
+  }
+
   cache_enabled = sceIoGetstat(TEXTURE_CACHE_DISABLE_PATH, &stat) < 0;
   if (!cache_enabled) {
     traceLog("texture cache: disabled by %s\n", TEXTURE_CACHE_DISABLE_PATH);
@@ -896,6 +964,7 @@ void texture_cache_init(void) {
   subimage_dropped = 0;
   upload_worst_us = upload_slow = 0;
   tick_pool_us = tick_pool_calls = tick_heap_us = tick_heap_calls = 0;
+  evict_lock_us = evict_lock_worst_us = evict_lock_holds = 0;
   upload_rejected = 0;
   store_unsound = 0;
   memset(pool_start, 0, sizeof(pool_start));
@@ -1581,15 +1650,30 @@ static int evict_textures(size_t target_bytes, uint32_t min_idle_ms) {
   if (num_candidates == 0)
     return 0;
 
-  GLuint previous = bound_textures[active_unit];
-
   int evicted = 0;
   for (int i = 0; i < num_candidates && tracked_bytes > target_bytes; i++) {
+    // One texture per acquisition rather than one per burst. Everything an
+    // eviction does -- reading the card to check the copy, writing a new one,
+    // freeing the pixels -- has to happen with the game's GL traffic shut out,
+    // and a burst of sixty-four would shut it out for the length of the burst.
+    // Between two textures the game gets its turn.
+    //
+    // The binding is saved and put back inside the same acquisition. Saving it
+    // outside would mean putting back whatever the unit held before the burst
+    // started, over the top of everything the game bound during it.
+    gl_lock();
+    unsigned held_from = tick_now_us();
+    GLuint previous = bound_textures[active_unit];
     evict_texture(candidates[i].id);
+    glBindTexture(GL_TEXTURE_2D, previous);
+    unsigned held = tick_now_us() - held_from;
+    gl_unlock();
+    evict_lock_us += held;
+    evict_lock_holds++;
+    if (held > evict_lock_worst_us)
+      evict_lock_worst_us = held;
     evicted++;
   }
-
-  glBindTexture(GL_TEXTURE_2D, previous);
 
   debugPrintf("texture cache: evicted %d textures (%u to heap, %u to card), "
               "%d KB in use, %d KB parked\n",
@@ -1801,9 +1885,38 @@ void texture_cache_tick(void) {
 
 /*
  * GL entry points
+ *
+ * Every one of these is a thin wrapper that takes the lock and calls the body,
+ * because every one of them either reads the binding this file keeps a shadow
+ * of or hands vitaGL something that allocates or frees texture storage, and the
+ * tick does both of those from another thread. The bodies are the functions the
+ * hooks used to be, unchanged, and are named _locked to say what they assume.
  */
+static void glActiveTextureHook_locked(GLenum texture);
+static void glBindTextureHook_locked(GLenum target, GLuint texture);
+static void glGenTexturesHook_locked(GLsizei n, GLuint *res);
+static void glDeleteTexturesHook_locked(GLsizei n, const GLuint *ids);
+static void glFramebufferTexture2DHook_locked(GLenum target, GLenum attachment, GLenum textarget,
+                                              GLuint texture, GLint level);
+static void glTexImage2DHook_locked(GLenum target, GLint level, GLint internalformat, GLsizei width,
+                                    GLsizei height, GLint border, GLenum format, GLenum type,
+                                    const void *data);
+static void glCompressedTexImage2DHook_locked(GLenum target, GLint level, GLenum format,
+                                              GLsizei width, GLsizei height, GLint border,
+                                              GLsizei imageSize, const void *data);
+static void glTexSubImage2DHook_locked(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                                       GLsizei width, GLsizei height, GLenum format, GLenum type,
+                                       const void *pixels);
+static void glTexParameteriHook_locked(GLenum target, GLenum pname, GLint param);
+static void glTexParameterfHook_locked(GLenum target, GLenum pname, GLfloat param);
 
 void glActiveTextureHook(GLenum texture) {
+  gl_lock();
+  glActiveTextureHook_locked(texture);
+  gl_unlock();
+}
+
+static void glActiveTextureHook_locked(GLenum texture) {
   int unit = texture - GL_TEXTURE0;
   if (unit >= 0 && unit < MAX_TEXTURE_UNITS)
     active_unit = unit;
@@ -1811,6 +1924,12 @@ void glActiveTextureHook(GLenum texture) {
 }
 
 void glBindTextureHook(GLenum target, GLuint texture) {
+  gl_lock();
+  glBindTextureHook_locked(target, texture);
+  gl_unlock();
+}
+
+static void glBindTextureHook_locked(GLenum target, GLuint texture) {
   bound_textures[active_unit] = texture;
 
   TextureInfo *info = cache_enabled ? texture_info(texture) : NULL;
@@ -1860,6 +1979,12 @@ void glBindTextureHook(GLenum target, GLuint texture) {
 }
 
 void glGenTexturesHook(GLsizei n, GLuint *res) {
+  gl_lock();
+  glGenTexturesHook_locked(n, res);
+  gl_unlock();
+}
+
+static void glGenTexturesHook_locked(GLsizei n, GLuint *res) {
   glGenTextures(n, res);
   // vitaGL reuses the names of deleted textures, so drop whatever we knew about
   // the previous occupant of each slot.
@@ -1868,6 +1993,12 @@ void glGenTexturesHook(GLsizei n, GLuint *res) {
 }
 
 void glDeleteTexturesHook(GLsizei n, const GLuint *ids) {
+  gl_lock();
+  glDeleteTexturesHook_locked(n, ids);
+  gl_unlock();
+}
+
+static void glDeleteTexturesHook_locked(GLsizei n, const GLuint *ids) {
   for (GLsizei i = 0; i < n; i++)
     texture_forget(ids[i]);
   glDeleteTextures(n, ids);
@@ -1896,6 +2027,12 @@ static int texture_make_resident(GLuint id) {
 }
 
 void glFramebufferTexture2DHook(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {
+  gl_lock();
+  glFramebufferTexture2DHook_locked(target, attachment, textarget, texture, level);
+  gl_unlock();
+}
+
+static void glFramebufferTexture2DHook_locked(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {
   // The game renders into this one, so its contents are not something we could
   // ever get back off the card. If it is evicted, it has to come back first --
   // rendering into the placeholder would be thrown away by the next restore.
@@ -1960,6 +2097,12 @@ extern int trace_textures;
 #endif
 
 void glTexImage2DHook(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *data) {
+  gl_lock();
+  glTexImage2DHook_locked(target, level, internalformat, width, height, border, format, type, data);
+  gl_unlock();
+}
+
+static void glTexImage2DHook_locked(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *data) {
 #ifdef LOADER_TRACE
   trace_textures++;
 #endif
@@ -1984,6 +2127,12 @@ void glTexImage2DHook(GLenum target, GLint level, GLint internalformat, GLsizei 
 }
 
 void glCompressedTexImage2DHook(GLenum target, GLint level, GLenum format, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data) {
+  gl_lock();
+  glCompressedTexImage2DHook_locked(target, level, format, width, height, border, imageSize, data);
+  gl_unlock();
+}
+
+static void glCompressedTexImage2DHook_locked(GLenum target, GLint level, GLenum format, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data) {
 #ifdef LOADER_TRACE
   trace_textures++;
 #endif
@@ -2003,6 +2152,12 @@ void glCompressedTexImage2DHook(GLenum target, GLint level, GLenum format, GLsiz
 }
 
 void glTexSubImage2DHook(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) {
+  gl_lock();
+  glTexSubImage2DHook_locked(target, level, xoffset, yoffset, width, height, format, type, pixels);
+  gl_unlock();
+}
+
+static void glTexSubImage2DHook_locked(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) {
   // A texture the game keeps writing into is one it is actively using, and the
   // copy we hold no longer matches what it should look like. It also has to be
   // the real texture and not the placeholder -- see texture_make_resident.
@@ -2018,6 +2173,12 @@ void glTexSubImage2DHook(GLenum target, GLint level, GLint xoffset, GLint yoffse
 }
 
 void glTexParameteriHook(GLenum target, GLenum pname, GLint param) {
+  gl_lock();
+  glTexParameteriHook_locked(target, pname, param);
+  gl_unlock();
+}
+
+static void glTexParameteriHook_locked(GLenum target, GLenum pname, GLint param) {
   if (pname == GL_TEXTURE_MIN_FILTER) {
     TextureInfo *info = texture_info(bound_textures[active_unit]);
     if (info)
@@ -2027,6 +2188,12 @@ void glTexParameteriHook(GLenum target, GLenum pname, GLint param) {
 }
 
 void glTexParameterfHook(GLenum target, GLenum pname, GLfloat param) {
+  gl_lock();
+  glTexParameterfHook_locked(target, pname, param);
+  gl_unlock();
+}
+
+static void glTexParameterfHook_locked(GLenum target, GLenum pname, GLfloat param) {
   if (pname == GL_TEXTURE_MIN_FILTER) {
     TextureInfo *info = texture_info(bound_textures[active_unit]);
     if (info)
@@ -2059,6 +2226,9 @@ void texture_cache_stats(TextureCacheStats *out) {
   out->tick_pool_calls = (int)tick_pool_calls;
   out->tick_heap_ms = (int)(tick_heap_us / 1000);
   out->tick_heap_calls = (int)tick_heap_calls;
+  out->evict_lock_ms = (int)(evict_lock_us / 1000);
+  out->evict_lock_holds = (int)evict_lock_holds;
+  out->evict_lock_worst_ms = (int)(evict_lock_worst_us / 1000);
   out->upload_slow = (int)upload_slow;
   out->key_hashed_mb = (int)(key_bytes_hashed / (1024 * 1024));
   out->restore_open_ms = (int)(restore_open_us / 1000);
