@@ -882,6 +882,7 @@ void texture_cache_init(void) {
   restore_deferred_count = 0;
   subimage_dropped = 0;
   upload_worst_us = upload_slow = 0;
+  tick_pool_us = tick_pool_calls = tick_heap_us = tick_heap_calls = 0;
   upload_rejected = 0;
   store_unsound = 0;
   memset(pool_start, 0, sizeof(pool_start));
@@ -2035,6 +2036,15 @@ void texture_cache_stats(TextureCacheStats *out) {
   out->upload_driver_ms = (int)(upload_driver_us / 1000);
   out->upload_loader_ms = (int)(upload_loader_us / 1000);
   out->upload_worst_ms = (int)(upload_worst_us / 1000);
+  // What the tick costs itself, which is neither an upload nor a restore and so
+  // appeared in neither. mallinfo walks the whole free list and takes the malloc
+  // lock; vglMemFree walks vitaGL's, and was measured on this hardware at 8062
+  // us across five pools. Both have been timed since they were written and
+  // neither has ever been reported.
+  out->tick_pool_ms = (int)(tick_pool_us / 1000);
+  out->tick_pool_calls = (int)tick_pool_calls;
+  out->tick_heap_ms = (int)(tick_heap_us / 1000);
+  out->tick_heap_calls = (int)tick_heap_calls;
   out->upload_slow = (int)upload_slow;
   out->key_hashed_mb = (int)(key_bytes_hashed / (1024 * 1024));
   out->restore_open_ms = (int)(restore_open_us / 1000);

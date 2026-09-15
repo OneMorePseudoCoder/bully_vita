@@ -67,6 +67,13 @@ typedef struct {
   // so the question stops being answered by argument.
   int upload_driver_ms;
   int upload_loader_ms;
+  // The tick's own cost, and how often it is paying it. The sampling interval
+  // collapses to every call when the pool is within a couple of megabytes of
+  // the mark, which is exactly when the frame rate is worst -- so these two
+  // numbers decide whether that is the cache watching the pool or the pool
+  // being empty.
+  int tick_pool_ms, tick_pool_calls;
+  int tick_heap_ms, tick_heap_calls;
   int upload_worst_ms; // the slowest single upload of the session
   int upload_slow;     // uploads that took long enough to be a stall
   int key_hashed_mb;

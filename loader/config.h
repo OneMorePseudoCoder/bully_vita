@@ -127,6 +127,25 @@
 // the texture cache.
 #define STREAMING_DISABLE_PATH DATA_PATH "/" "no_streamfix"
 
+// Puts CDStreamThread back on core 2, where upstream has it, sharing with the
+// thread that runs the frame.
+//
+// Upstream pins the main thread to core 2 at priority 127 and CDStreamThread to
+// core 2 at priority 65. Lower is stronger on this machine, so every time the
+// game streams, the streaming thread takes the core away from the loop that
+// draws -- and it is stuttering while streaming, which is what that looks like.
+//
+// The crash dump's thread table says there is somewhere for it to go. Over 1980
+// seconds: core 0 41% (GameMain), core 2 49% (the main thread plus this), and
+// core 1 13% -- RenderThread and vitaGL's collector and nothing else. On core 1
+// it sits below RenderThread's 64 rather than above the main thread's 127, so
+// what gets held up is the streaming rather than the frame.
+//
+// The toggle is here because this is a change to an assignment the port has
+// shipped with for years, and one run either way settles it better than an
+// argument does.
+#define STREAM_CORE_DISABLE_PATH DATA_PATH "/" "no_streamcore"
+
 // How long a vertex buffer must go unlocked before the loader takes back the
 // CPU-side copy of its data. The game keeps that copy for the life of the
 // buffer so it can be locked again without reading back from the GPU, which is

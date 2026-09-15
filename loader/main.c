@@ -64,6 +64,9 @@ unsigned int _oal_thread_priority;
 unsigned int _oal_thread_affinity;
 
 int capunlocker_enabled = 0;
+// Whether CDStreamThread goes to core 1 instead of sharing core 2 with the
+// thread that runs the frame. See STREAM_CORE_DISABLE_PATH.
+static int stream_thread_off_frame_core = 1;
 
 SceTouchPanelInfo panelInfoFront;
 
@@ -223,8 +226,10 @@ static void memory_heartbeat(void) {
   // enough to be vitaGL's allocator sleeping rather than an upload working.
   static int last_driver, last_loader, last_slow, last_open, last_read;
   static int last_sum, last_replay, last_copy, last_heap, last_card;
+  static int last_pool_ms, last_pool_calls, last_heap_ms, last_heap_calls;
   traceLog("cost: upload %d ms (worst %d ms, %d over %d) | restore %d ms = "
-           "open %d read %d sum %d replay %d copy %d | back from heap %d card %d\n",
+           "open %d read %d sum %d replay %d copy %d | back from heap %d card %d | "
+           "tick pool %d ms/%d heap %d ms/%d\n",
            tex.upload_driver_ms - last_driver, tex.upload_worst_ms,
            tex.upload_slow - last_slow, TEXTURE_SLOW_UPLOAD_MS,
            (tex.restore_open_ms - last_open) + (tex.restore_read_ms - last_read) +
@@ -233,7 +238,9 @@ static void memory_heartbeat(void) {
            tex.restore_open_ms - last_open, tex.restore_read_ms - last_read,
            tex.restore_sum_ms - last_sum, tex.restore_replay_ms - last_replay,
            tex.restore_copy_ms - last_copy, tex.restore_from_heap - last_heap,
-           tex.restore_from_card - last_card);
+           tex.restore_from_card - last_card, tex.tick_pool_ms - last_pool_ms,
+           tex.tick_pool_calls - last_pool_calls, tex.tick_heap_ms - last_heap_ms,
+           tex.tick_heap_calls - last_heap_calls);
   last_driver = tex.upload_driver_ms;
   last_loader = tex.upload_loader_ms;
   last_slow = tex.upload_slow;
@@ -244,6 +251,10 @@ static void memory_heartbeat(void) {
   last_copy = tex.restore_copy_ms;
   last_heap = tex.restore_from_heap;
   last_card = tex.restore_from_card;
+  last_pool_ms = tex.tick_pool_ms;
+  last_pool_calls = tex.tick_pool_calls;
+  last_heap_ms = tex.tick_heap_ms;
+  last_heap_calls = tex.tick_heap_calls;
   (void)last_loader;
 }
 
@@ -348,7 +359,7 @@ void *OS_ThreadLaunch(int (* func)(), void *arg, int cpu, char *name, int unused
       vita_affinity = 0x20000;
     } else if (strcmp(name, "CDStreamThread") == 0) {
       vita_priority = 65;
-      vita_affinity = 0x40000;
+      vita_affinity = stream_thread_off_frame_core ? 0x20000 : 0x40000;
     } else if (strcmp(name, "Sound") == 0) {
       vita_priority = 65;
       vita_affinity = 0x80000;
@@ -365,7 +376,7 @@ void *OS_ThreadLaunch(int (* func)(), void *arg, int cpu, char *name, int unused
       vita_affinity = 0x20000;
     } else if (strcmp(name, "CDStreamThread") == 0) {
       vita_priority = 65;
-      vita_affinity = 0x40000;
+      vita_affinity = stream_thread_off_frame_core ? 0x20000 : 0x40000;
     } else if (strcmp(name, "Sound") == 0) {
       vita_priority = 65;
       vita_affinity = 0x20000;
@@ -979,6 +990,10 @@ int main(int argc, char *argv[]) {
   // said. The compiler's own timestamp cannot be wrong about that.
   traceLog("---- Bully loader %s, store format %d ----\n", LOADER_BUILD_ID,
            BACKUP_FORMAT);
+
+  stream_thread_off_frame_core = !file_exists(STREAM_CORE_DISABLE_PATH);
+  traceLog("threads: frame on core 2 at priority 127, streaming on core %d\n",
+           stream_thread_off_frame_core ? 1 : 2);
 
   capunlocker_enabled = check_capunlocker() >= 0;
   if (capunlocker_enabled) {
