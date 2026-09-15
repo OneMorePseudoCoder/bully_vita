@@ -37,6 +37,11 @@ extern size_t fake_next_usable_bonus;
 // stall is seen as a stall rather than averaged away.
 extern uint64_t fake_next_upload_delay_us;
 
+// How many times the loader has asked vitaGL how much memory is left. On
+// hardware each one walks a free list and costs milliseconds, so the count is
+// the cost.
+extern unsigned fake_vglmemfree_calls;
+
 // How vitaGL itself sizes a pixel, which is not always what the loader's budget
 // estimate says.
 size_t fake_bpp(GLint internalformat, GLenum type);

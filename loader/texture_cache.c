@@ -246,10 +246,23 @@ static unsigned tick_now_us(void) {
 static size_t free_now[VGL_POOLS];
 static int reclaiming;
 
+// Every pool. Only for the reading taken once at startup, which is what every
+// later judgement is made against.
 static void vitagl_free_per_pool(size_t out[VGL_POOLS]) {
   unsigned t0 = tick_now_us();
   for (int pool = 0; pool < VGL_POOLS; pool++)
     out[pool] = vglMemFree((vglMemType)pool);
+  tick_pool_us += tick_now_us() - t0;
+  tick_pool_calls++;
+}
+
+// The one pool the tick actually reads. CDRAM and phycont are sampled at
+// startup for the log and never looked at again -- paying for all three on
+// every sample was two thirds of a cost that was already the largest thing this
+// loader did to the frame rate.
+static void sample_watched_pool(void) {
+  unsigned t0 = tick_now_us();
+  free_now[VGL_POOL_WATCHED] = vglMemFree((vglMemType)VGL_POOL_WATCHED);
   tick_pool_us += tick_now_us() - t0;
   tick_pool_calls++;
 }
@@ -259,18 +272,18 @@ static void vitagl_free_per_pool(size_t out[VGL_POOLS]) {
 // by what a frame can plausibly take out of a pool and that is how long the
 // last answer stays good for. While actually reclaiming, ask every frame: the
 // numbers are being acted on, and a stale one evicts against the wrong figure.
-static unsigned pool_sample_interval(void) {
-  if (!pool_start[1] || reclaiming)
-    return 1;
+static unsigned pool_sample_interval_ms(void) {
+  if (!pool_start[VGL_POOL_WATCHED] || reclaiming)
+    return TEXTURE_POOL_SAMPLE_MS_MIN;
 
   size_t low = pool_start[VGL_POOL_WATCHED] / 100 * TEXTURE_FREE_HEADROOM_LOW_PERCENT;
   size_t margin =
       free_now[VGL_POOL_WATCHED] > low ? free_now[VGL_POOL_WATCHED] - low : 0;
 
-  unsigned frames = (unsigned)(margin / (TEXTURE_POOL_MB_PER_FRAME * 1024 * 1024));
-  if (frames < 1)
-    frames = 1;
-  return frames > TEXTURE_POOL_SAMPLE_FRAMES ? TEXTURE_POOL_SAMPLE_FRAMES : frames;
+  uint64_t ms = (uint64_t)(margin / (1024 * 1024)) * 1000 / TEXTURE_POOL_DRAIN_MB_PER_SEC;
+  if (ms < TEXTURE_POOL_SAMPLE_MS_MIN)
+    ms = TEXTURE_POOL_SAMPLE_MS_MIN;
+  return ms > TEXTURE_POOL_SAMPLE_MS_MAX ? TEXTURE_POOL_SAMPLE_MS_MAX : (unsigned)ms;
 }
 
 
@@ -1620,10 +1633,10 @@ void texture_cache_tick(void) {
   // pool that runs dry is the crash this whole cache exists to prevent. So the
   // interval is the margin divided by what a frame can plausibly consume --
   // full rate when it is close, a fifteenth of the rate when it is not.
-  static uint32_t pool_sampled;
-  if (!pool_sampled || frame_counter - pool_sampled >= pool_sample_interval()) {
-    vitagl_free_per_pool(free_now);
-    pool_sampled = frame_counter;
+  static uint32_t pool_sampled_ms;
+  if (!pool_sampled_ms || now_ms - pool_sampled_ms >= pool_sample_interval_ms()) {
+    sample_watched_pool();
+    pool_sampled_ms = now_ms;
   }
   if (!pool_start[1]) { // the RAM pool is never zero once vitaGL is up
     vitagl_free_per_pool(pool_start);
@@ -1723,7 +1736,8 @@ void texture_cache_tick(void) {
   // nothing, cheap has been tried and cheap has failed.
   size_t emergency = pool_start[1] / 100 * TEXTURE_POOL_EMERGENCY_PERCENT;
   card_writes_allowed =
-      card_tier_enabled && (free_now[1] < emergency || blocked_frames >= TEXTURE_BLOCKED_FRAMES);
+      card_tier_enabled &&
+      (free_now[VGL_POOL_WATCHED] < emergency || blocked_frames >= TEXTURE_BLOCKED_FRAMES);
 
   // Stop rescanning once it is established that there is nowhere to put
   // anything.

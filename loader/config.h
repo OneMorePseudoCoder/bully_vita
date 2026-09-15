@@ -303,8 +303,24 @@
 // fifteen. So the interval is the distance to the mark divided by the megabytes
 // a frame can plausibly take, which is full rate near the line and a fifteenth
 // of it when a pool is twenty megabytes clear -- where it normally sits.
-#define TEXTURE_POOL_SAMPLE_FRAMES 15
-#define TEXTURE_POOL_MB_PER_FRAME 2
+// How long a pool reading stays good for, in milliseconds.
+//
+// This used to be counted in ticks, and a tick is a ProcessEvents call: at 500
+// a second, "one in fifteen" is thirty readings a second. vglMemFree walks
+// vitaGL's free lists and the walk gets longer as the pools fill -- measured on
+// hardware at 6.4 ms a call early in a session and 50.5 ms late in one, across
+// three pools. A 5840 second session spent 2585 seconds of it inside this one
+// function, 44% of the wall clock, all on the thread that runs the frame. In
+// the worst twenty second interval it was 19.2 of the 20, and those intervals
+// ran at 13 ProcessEvents a second against 520 when the sampling was cheap.
+//
+// So: a clock rather than a call count, and only the pool that decisions are
+// made from. The interval is the margin to the mark divided by how fast the
+// pool can plausibly drain, which is what the old rule meant to express before
+// the tick rate ran away with it.
+#define TEXTURE_POOL_DRAIN_MB_PER_SEC 20
+#define TEXTURE_POOL_SAMPLE_MS_MIN 250
+#define TEXTURE_POOL_SAMPLE_MS_MAX 1000
 
 // Where reclaiming stops, and below, where it starts.
 //

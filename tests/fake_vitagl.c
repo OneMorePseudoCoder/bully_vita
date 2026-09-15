@@ -76,6 +76,7 @@ void fake_reset(size_t free_memory) {
   memset(fake_slot_usable, 0, sizeof(fake_slot_usable));
   fake_next_usable_bonus = 0;
   fake_next_upload_delay_us = 0;
+  fake_vglmemfree_calls = 0;
 }
 
 void fake_set_pools(size_t cdram, size_t ram, size_t phycont) {
@@ -278,7 +279,13 @@ size_t vglMallocUsableSize(void *ptr) {
 
 // Mirrors the real one, including the trap: VGL_MEM_ALL is the enum terminator
 // and asking for it reports no memory at all rather than the total.
+// Counted because on hardware this is the most expensive thing the loader
+// calls: it walks vitaGL's free lists, and the walk lengthens as the pools
+// fill. How many times it is called is the whole cost.
+unsigned fake_vglmemfree_calls;
+
 size_t vglMemFree(vglMemType type) {
+  fake_vglmemfree_calls++;
   if (type >= VGL_MEM_ALL)
     return 0;
   return (int)type < FAKE_POOLS ? fake_pool_free[type] : 0;

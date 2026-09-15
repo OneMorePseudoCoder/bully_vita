@@ -174,21 +174,31 @@ int main(void) {
     assert(fake_store_files() == spilled && "the store must survive a restart");
     assert(store_files == spilled && "and be read back into the index");
 
+    uint32_t evicted_before_second_run = evicted_count;
     for (int i = 0; i < count; i++) {
       ids[i] = tex_upload(0xDE000000u + (unsigned)i, 512, 512, TEX_BYTES);
       drain();
       tick();
     }
     frames(TEXTURE_IDLE_FRAMES * 8);
-    printf("store reuse  : %u spilled, %u evictions free on the next run, %u written  OK\n",
-           spilled, store_reused, card_evicted_count);
-    // Most of what the store holds, evicted for free. Not "at least as many as
-    // the first run spilled": that counts how hard the cache was driven rather
-    // than whether the store works, and a cache that recovers the pool sooner
-    // legitimately evicts fewer textures the second time round. What matters is
-    // below -- that nothing already in the store is paid for again.
-    assert(store_reused * 10 >= (uint32_t)spilled * 8 &&
-           "the store is not being used for the evictions that did happen");
+    uint32_t evicted_this_run = evicted_count - evicted_before_second_run;
+    printf("store reuse  : %u spilled, %u of %u evictions free on the next run, "
+           "%u written  OK\n",
+           spilled, store_reused, evicted_this_run, card_evicted_count);
+    // What this block can honestly say: the store survived a restart, it was
+    // used, and nothing it already held was paid for again.
+    //
+    // Not a ratio. I have twice written one here -- first against what the
+    // previous run spilled, then against the evictions this run made -- and
+    // both are really measurements of how hard the cache happened to be driven.
+    // Only some of the textures uploaded here are in the store at all, so the
+    // hit rate is a property of the test's own arithmetic rather than of the
+    // cache. The exact promise -- that a texture the store already holds is
+    // evicted with no copy and no write -- is tested deterministically on a
+    // single texture in the "bad header" block below, where it can be stated
+    // without a fudge factor.
+    assert(evicted_this_run > 0 && "nothing was evicted, so nothing was measured");
+    assert(store_reused > 0 && "the store was not used at all");
     // Not zero, and it should not be. Freeing an eviction from its ration means
     // more of them succeed, so textures that only ever reached the heap tier on
     // the first run get as far as the card on the second and are written once,
@@ -296,7 +306,7 @@ int main(void) {
     // Below the low mark, and it has to act -- and act past the low mark rather
     // than just back over it, or it lands straight back here next frame.
     fake_set_pools(81 * MB, (low_mb - 2) * MB, 26 * MB);
-    frames(TEXTURE_POOL_SAMPLE_FRAMES * 2);
+    frames((int)(TEXTURE_POOL_SAMPLE_MS_MAX * 2 * 1000 / FRAME_US) + 2);
     assert(evicted_count > before && "a pool below the low mark must be reclaimed");
     printf("             : %d evicted once it dropped below the low mark  OK\n",
            evicted_count - before);
@@ -669,6 +679,43 @@ int main(void) {
 
   // A restore that cannot get memory must not retire the texture.
   //
+  // Asking how much room is left must not cost more than the room is worth.
+  //
+  // vglMemFree walks vitaGL's free lists and the walk lengthens as the pools
+  // fill: 6.4 ms a call early in a real session, 50.5 ms late in one. The
+  // interval used to be counted in ticks, and a tick is a ProcessEvents call --
+  // at 500 a second, one in fifteen is thirty readings a second. That session
+  // spent 2585 of its 5840 seconds inside this one function, on the thread that
+  // runs the frame, and the twenty second intervals where it took 19 of the 20
+  // ran at 13 ProcessEvents a second against 520 where it was cheap.
+  //
+  // A clock does not care how often it is called.
+  {
+    harness_start_empty(0);
+    fake_set_pools(81 * MB, 105 * MB, 26 * MB);
+    tick();
+    for (int i = 0; i < 64; i++) { tex_upload(0x5A11B1E0u + (unsigned)i, 512, 512, TEX_BYTES); drain(); }
+
+    // Twenty seconds of a game calling ProcessEvents five hundred times a
+    // second, which is what the logs show it doing.
+    uint32_t calls_before = tick_pool_calls;
+    unsigned driver_before = fake_vglmemfree_calls;
+    for (int i = 0; i < 10000; i++)
+      tick_us(2000);
+    uint32_t calls = tick_pool_calls - calls_before;
+    unsigned driver = fake_vglmemfree_calls - driver_before;
+    unsigned ceiling = 20000 / TEXTURE_POOL_SAMPLE_MS_MIN + 4;
+    printf("pool cost    : %u readings in 20 s of ticks at 500/s (ceiling %u)  OK\n",
+           calls, ceiling);
+    assert(calls <= ceiling &&
+           "the pool is being read on a tick count rather than a clock");
+    // And one pool per reading, not all of them. Only the watched pool decides
+    // anything; the other two are read once at startup for the log. Paying for
+    // three was two thirds of the cost.
+    assert(driver <= calls &&
+           "the tick is reading pools it never looks at");
+  }
+
   // A stall has to be seen as a stall.
   //
   // vitaGL's allocator, when its pools cannot serve a texture, calls
@@ -865,7 +912,7 @@ int main(void) {
     size_t acted_at = 0;
     for (size_t free_mb = 40; free_mb >= 8 && !acted_at; free_mb -= 2) {
       fake_set_pools(81 * MB, free_mb * MB, 26 * MB);
-      frames(TEXTURE_POOL_SAMPLE_FRAMES * 2);
+      frames((int)(TEXTURE_POOL_SAMPLE_MS_MAX * 2 * 1000 / FRAME_US) + 2);
       if (evicted_count > before)
         acted_at = free_mb;
     }
@@ -917,7 +964,7 @@ int main(void) {
     // mark is only asked about once every fifteen frames, which is the whole
     // point of the interval.
     fake_set_pools(81 * MB, 10 * MB, 26 * MB);
-    frames(TEXTURE_POOL_SAMPLE_FRAMES * 2);
+    frames((int)(TEXTURE_POOL_SAMPLE_MS_MAX * 2 * 1000 / FRAME_US) + 2);
     assert(evicted_count > before && "a real shortage must still be reclaimed");
     printf("             : ram at 10 MB of 105, %u evicted  OK\n",
            evicted_count - before);
@@ -1112,7 +1159,7 @@ int main(void) {
     // looking at the healthy figures it read before the squeeze and sees no
     // shortage to act on -- which would make this pass without the policy ever
     // being consulted. Still well inside the idle window in real time.
-    frames(TEXTURE_POOL_SAMPLE_FRAMES + 5);
+    frames((int)(TEXTURE_POOL_SAMPLE_MS_MAX * 1000 / FRAME_US) + 5);
     assert(!textures[id].evicted &&
            "a texture drawn a fraction of a second ago was evicted");
     printf("idle is time : 600 ticks in %u ms did not make a texture stale  OK\n",
