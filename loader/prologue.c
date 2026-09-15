@@ -60,8 +60,12 @@ static int thumb16_movable(uint16_t hw) {
     int rd = (hw & 7) | ((hw >> 4) & 8);
     return rm != 15 && rd != 15; // ADD/CMP/MOV high registers, but never PC
   }
+  if (hw >= 0x5000 && hw <= 0x5FFF)
+    return 1; // LDR/STR family with a register offset, low registers only
   if (hw >= 0x6000 && hw <= 0x9FFF)
     return 1; // LDR/STR/LDRB/STRB/LDRH/STRH immediate, low registers or SP
+  if (hw >= 0xB200 && hw <= 0xB2FF)
+    return 1; // SXTH/SXTB/UXTH/UXTB, low registers only
   return 0;
 }
 

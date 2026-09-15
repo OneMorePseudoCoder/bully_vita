@@ -19,7 +19,17 @@ set(VITA_TITLEID  "BULLY0000")
 # where the placeholder was.
 set(VITA_MKSFOEX_FLAGS "-d ATTRIBUTE2=12 -s CONTENT_ID=HB0001-${VITA_TITLEID}_00-0000000000000000")
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -Wl,-q,--wrap,memcpy,--wrap,memmove,--wrap,memset -D_GNU_SOURCE -Wall -O3 -mfloat-abi=softfp")
+# --section-start: vita-elf-create appends a few kilobytes of SCE metadata to the
+# end of the executable segment, and the linker had been leaving it only whatever
+# was left below the next 64 KB boundary, where the writable segment starts. That
+# margin was down to 1388 bytes, and a commit that added four kilobytes of code
+# failed the build with "Cannot allocate 4496 bytes for SCE data at end of
+# segment 0; segment 1 overlaps" -- a cliff with a 64 KB period that any commit
+# could walk off, reported by a tool that then segfaulted rather than saying what
+# to do about it. Pinning the writable segment where it is gives the metadata a
+# fixed 128 KB of room instead of a remainder. (-z max-page-size does not work
+# here: it merges the two segments into one RWE segment.)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -Wl,-q,--section-start=.init_array=0x81190000,--wrap,memcpy,--wrap,memmove,--wrap,memset -D_GNU_SOURCE -Wall -O3 -mfloat-abi=softfp")
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++11")
 
 # Regenerated on every build, so the banner in the log names the commit that

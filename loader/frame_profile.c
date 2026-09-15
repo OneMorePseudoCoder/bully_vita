@@ -57,33 +57,72 @@ typedef struct {
 } ProfileTarget;
 
 static const ProfileTarget targets[] = {
+    // The frame, top down. CWorld::Process is called only from CGame::Process,
+    // so these nest and their times are inclusive.
     {"_ZN5CGame7ProcessEv", "CGame"},
     {"_ZN6CWorld7ProcessEv", "CWorld"},
-    {"_ZN5World6UpdateEf", "World"},
+    {"_ZN14WorldSceneView6RenderEv", "scene draw"},
+    {"_ZN14WorldSceneView6UpdateEf", "sceneview"},
     {"_ZN10CStreaming6UpdateEv", "streaming"},
     {"_ZN13ScriptManager6UpdateEb", "script"},
     {"_ZN9LuaScript6UpdateEb", "lua"},
-    {"_ZN10RendererES6UpdateEf", "rendererES"},
-    {"_ZN14WorldSceneView6UpdateEf", "sceneview"},
-    {"_ZN14WorldSceneView6RenderEv", "scene draw"},
-    {"_ZN3hal5Audio6UpdateEv", "audio"},
-    {"_ZN13AnimationTree6UpdateEf", "anim tree"},
-    {"_ZN11CPedManager6UpdateEv", "peds"},
-    {"_ZN13CSpawnManager6UpdateEv", "spawn"},
-    {"_ZN13EffectManager6UpdateEv", "effects"},
     {"_ZN13CameraManager6UpdateEv", "camera"},
-    {"_ZN12CFireManager6UpdateEv", "fire"},
-    {"_ZN10POIManager6UpdateEv", "poi"},
-    {"_ZN12CoverManager6UpdateEv", "cover"},
+
+    // Where CWorld::Process's time actually goes. It is 3140 bytes of code and
+    // spends fourteen milliseconds a frame, so the work is not in it: it walks
+    // the entity pools and calls each entity's ProcessControl through a vtable.
+    // Those calls are indirect and cannot be hooked where they are made, but the
+    // implementations have names, and hooking an implementation catches it
+    // however it was reached. This is the per entity loop, one level below where
+    // the first round looked.
+    {"_ZN11CAutomobile14ProcessControlEv", "car ctrl"},
+    {"_ZN11CAutomobile9PreRenderEv", "car pre"},
+    {"_ZN4CPed14ProcessControlEv", "ped ctrl"},
+    {"_ZN4CPed9PreRenderEv", "ped pre"},
+    {"_ZN4CPed22ProcessEntityCollisionER7CMatrixP7CEntityP9CColPointb", "ped coll"},
+    {"_ZN10CPlayerPed14ProcessControlEv", "player ctrl"},
+    {"_ZN9CPhysical14ProcessControlEv", "phys ctrl"},
+    {"_ZN5CBike14ProcessControlEv", "bike ctrl"},
+    {"_ZN7CObject14ProcessControlEv", "obj ctrl"},
+    {"_ZN7CEntity9PreRenderEv", "ent pre"},
+    {"_ZN7CEntity19UpdateAnimPreRenderEv", "ent anim"},
+
+    // The rest of what CGame::Process calls. Between CWorld's fourteen
+    // milliseconds and CGame's twenty there are five and a half unaccounted for,
+    // and none of the first round's targets were in them.
+    {"_ZN11CPopulation6UpdateEb", "population"},
+    {"_ZN9GameLogic6UpdateEv", "gamelogic"},
+    {"_ZN11CMissionMgr6UpdateEv", "mission"},
+    {"_ZN12CCutsceneMgr6UpdateEv", "cutscene"},
+    {"_ZN9CParticle6UpdateEv", "particle"},
+    {"_ZN7Weather6UpdateEv", "weather"},
+    {"_ZN9Skidmarks6UpdateEv", "skidmarks"},
+    {"_ZN7Tagging6UpdateEv", "tagging"},
+    {"_ZN9CTxdStore14GarbageCollectEv", "txd gc"},
+    {"_ZN18PersistentEntities6UpdateEv", "persistent"},
+    {"_ZN16CObstacleManager23CheckForLoadedCollisionEv", "obst col"},
+    {"_ZN16CObstacleManager24CheckForDeferredEntitiesEv", "obst def"},
+
+    // The thirteen and a half second freeze. One call to AreaTransitionManager::
+    // Update took 13600 ms in the first profiled run, and CGame::Process's worst
+    // call of 13619 ms is the same event seen one level up. Its whole tree is
+    // here, so the next run says which part of it that was.
     {"_ZN21AreaTransitionManager6UpdateEv", "area"},
-    {"_ZN19ScriptEffectManager6UpdateEv", "script fx"},
-    {"_ZN16CClothingManager6UpdateEv", "clothing"},
-    {"_ZN14CPatrolManager6UpdateEv", "patrol"},
-    {"_ZN10CPedSocial6UpdateEv", "social"},
-    {"_ZN18EffectLightManager6UpdateEv", "fx lights"},
+    {"_ZN21AreaTransitionManager32UpdateAreaTransitionStateMachineEv", "area sm"},
+    {"_ZN21AreaTransitionManager40UpdateBlockingAreaTransitionStateMachineEv", "area block"},
+    {"_ZN21AreaTransitionManager8LoadAreaERK7CVector", "area load"},
+    {"_ZN5CGame12TidyUpMemoryEbb", "tidy mem"},
+    {"_ZN13ScriptManager15StopAreaScriptsEv", "script stop"},
+    {"_ZN11CPedManager12ShutDownPedsEv", "peds shut"},
+    {"_ZN9CColStore25SpecialHasCollisionLoadedERK9CVector2D", "col check"},
 };
 
+
 #define PROFILE_SLOTS ((int)(sizeof(targets) / sizeof(targets[0])))
+// One thunk per slot, and the thunks are written out by hand because each has to
+// know which slot it stands for. Adding a target past this needs another one.
+#define PROFILE_THUNKS 48
+_Static_assert(PROFILE_SLOTS <= PROFILE_THUNKS, "more targets than thunks to reach them with");
 #define TRAMPOLINE_BYTES 64
 
 typedef struct {
@@ -133,33 +172,77 @@ __asm__(".syntax unified\n"
         "  pop   {r0, r1}\n"
         "  pop   {r4, pc}\n"
         ".endm\n"
-        "FPTHUNK 0\n  FPTHUNK 1\n  FPTHUNK 2\n  FPTHUNK 3\n"
-        "FPTHUNK 4\n  FPTHUNK 5\n  FPTHUNK 6\n  FPTHUNK 7\n"
-        "FPTHUNK 8\n  FPTHUNK 9\n  FPTHUNK 10\n FPTHUNK 11\n"
-        "FPTHUNK 12\n FPTHUNK 13\n FPTHUNK 14\n FPTHUNK 15\n"
-        "FPTHUNK 16\n FPTHUNK 17\n FPTHUNK 18\n FPTHUNK 19\n"
-        "FPTHUNK 20\n FPTHUNK 21\n FPTHUNK 22\n FPTHUNK 23\n");
+        "FPTHUNK 0\n FPTHUNK 1\n FPTHUNK 2\n FPTHUNK 3\n FPTHUNK 4\n FPTHUNK 5\n"
+        "FPTHUNK 6\n FPTHUNK 7\n FPTHUNK 8\n FPTHUNK 9\n FPTHUNK 10\n FPTHUNK 11\n"
+        "FPTHUNK 12\n FPTHUNK 13\n FPTHUNK 14\n FPTHUNK 15\n FPTHUNK 16\n FPTHUNK 17\n"
+        "FPTHUNK 18\n FPTHUNK 19\n FPTHUNK 20\n FPTHUNK 21\n FPTHUNK 22\n FPTHUNK 23\n"
+        "FPTHUNK 24\n FPTHUNK 25\n FPTHUNK 26\n FPTHUNK 27\n FPTHUNK 28\n FPTHUNK 29\n"
+        "FPTHUNK 30\n FPTHUNK 31\n FPTHUNK 32\n FPTHUNK 33\n FPTHUNK 34\n FPTHUNK 35\n"
+        "FPTHUNK 36\n FPTHUNK 37\n FPTHUNK 38\n FPTHUNK 39\n FPTHUNK 40\n FPTHUNK 41\n"
+        "FPTHUNK 42\n FPTHUNK 43\n FPTHUNK 44\n FPTHUNK 45\n FPTHUNK 46\n FPTHUNK 47\n");
 
-extern void frame_profile_thunk_0(void), frame_profile_thunk_1(void);
-extern void frame_profile_thunk_2(void), frame_profile_thunk_3(void);
-extern void frame_profile_thunk_4(void), frame_profile_thunk_5(void);
-extern void frame_profile_thunk_6(void), frame_profile_thunk_7(void);
-extern void frame_profile_thunk_8(void), frame_profile_thunk_9(void);
-extern void frame_profile_thunk_10(void), frame_profile_thunk_11(void);
-extern void frame_profile_thunk_12(void), frame_profile_thunk_13(void);
-extern void frame_profile_thunk_14(void), frame_profile_thunk_15(void);
-extern void frame_profile_thunk_16(void), frame_profile_thunk_17(void);
-extern void frame_profile_thunk_18(void), frame_profile_thunk_19(void);
-extern void frame_profile_thunk_20(void), frame_profile_thunk_21(void);
-extern void frame_profile_thunk_22(void), frame_profile_thunk_23(void);
+extern void frame_profile_thunk_0(void);
+extern void frame_profile_thunk_1(void);
+extern void frame_profile_thunk_2(void);
+extern void frame_profile_thunk_3(void);
+extern void frame_profile_thunk_4(void);
+extern void frame_profile_thunk_5(void);
+extern void frame_profile_thunk_6(void);
+extern void frame_profile_thunk_7(void);
+extern void frame_profile_thunk_8(void);
+extern void frame_profile_thunk_9(void);
+extern void frame_profile_thunk_10(void);
+extern void frame_profile_thunk_11(void);
+extern void frame_profile_thunk_12(void);
+extern void frame_profile_thunk_13(void);
+extern void frame_profile_thunk_14(void);
+extern void frame_profile_thunk_15(void);
+extern void frame_profile_thunk_16(void);
+extern void frame_profile_thunk_17(void);
+extern void frame_profile_thunk_18(void);
+extern void frame_profile_thunk_19(void);
+extern void frame_profile_thunk_20(void);
+extern void frame_profile_thunk_21(void);
+extern void frame_profile_thunk_22(void);
+extern void frame_profile_thunk_23(void);
+extern void frame_profile_thunk_24(void);
+extern void frame_profile_thunk_25(void);
+extern void frame_profile_thunk_26(void);
+extern void frame_profile_thunk_27(void);
+extern void frame_profile_thunk_28(void);
+extern void frame_profile_thunk_29(void);
+extern void frame_profile_thunk_30(void);
+extern void frame_profile_thunk_31(void);
+extern void frame_profile_thunk_32(void);
+extern void frame_profile_thunk_33(void);
+extern void frame_profile_thunk_34(void);
+extern void frame_profile_thunk_35(void);
+extern void frame_profile_thunk_36(void);
+extern void frame_profile_thunk_37(void);
+extern void frame_profile_thunk_38(void);
+extern void frame_profile_thunk_39(void);
+extern void frame_profile_thunk_40(void);
+extern void frame_profile_thunk_41(void);
+extern void frame_profile_thunk_42(void);
+extern void frame_profile_thunk_43(void);
+extern void frame_profile_thunk_44(void);
+extern void frame_profile_thunk_45(void);
+extern void frame_profile_thunk_46(void);
+extern void frame_profile_thunk_47(void);
 
 static void (*const thunks[])(void) = {
-    frame_profile_thunk_0,  frame_profile_thunk_1,  frame_profile_thunk_2,  frame_profile_thunk_3,
-    frame_profile_thunk_4,  frame_profile_thunk_5,  frame_profile_thunk_6,  frame_profile_thunk_7,
-    frame_profile_thunk_8,  frame_profile_thunk_9,  frame_profile_thunk_10, frame_profile_thunk_11,
+    frame_profile_thunk_0, frame_profile_thunk_1, frame_profile_thunk_2, frame_profile_thunk_3,
+    frame_profile_thunk_4, frame_profile_thunk_5, frame_profile_thunk_6, frame_profile_thunk_7,
+    frame_profile_thunk_8, frame_profile_thunk_9, frame_profile_thunk_10, frame_profile_thunk_11,
     frame_profile_thunk_12, frame_profile_thunk_13, frame_profile_thunk_14, frame_profile_thunk_15,
     frame_profile_thunk_16, frame_profile_thunk_17, frame_profile_thunk_18, frame_profile_thunk_19,
     frame_profile_thunk_20, frame_profile_thunk_21, frame_profile_thunk_22, frame_profile_thunk_23,
+    frame_profile_thunk_24, frame_profile_thunk_25, frame_profile_thunk_26, frame_profile_thunk_27,
+    frame_profile_thunk_28, frame_profile_thunk_29, frame_profile_thunk_30, frame_profile_thunk_31,
+    frame_profile_thunk_32, frame_profile_thunk_33, frame_profile_thunk_34, frame_profile_thunk_35,
+    frame_profile_thunk_36, frame_profile_thunk_37, frame_profile_thunk_38, frame_profile_thunk_39,
+    frame_profile_thunk_40, frame_profile_thunk_41, frame_profile_thunk_42, frame_profile_thunk_43,
+    frame_profile_thunk_44, frame_profile_thunk_45, frame_profile_thunk_46, frame_profile_thunk_47,
 };
 
 static uint32_t profile_now_us(void) {
@@ -301,42 +384,74 @@ void frame_profile_init(void) {
 void frame_profile_report(void) {
   if (!profiling)
     return;
-  // Busiest first, as deltas over the interval, and only the ones that cost
-  // something: a line of two dozen zeroes is not a measurement. The worst is a
-  // high water mark and stays cumulative -- the question it answers is whether
-  // any single call has ever been long enough to be a stall on its own.
-  uint32_t delta[PROFILE_SLOTS];
-  uint8_t shown[PROFILE_SLOTS];
+
+  // Every slot that ran, busiest first, over as many lines as it takes -- and
+  // then the ones that did not.
+  //
+  // The first round printed the top eight and nothing else, so a target that was
+  // never called looked exactly like one that was called and was cheap. That is
+  // the difference between "this work is not worth parallelising" and "this
+  // function does not run", and the whole point of the exercise is telling them
+  // apart. So: no truncation, and a closing line that names what never ran.
+  uint32_t ms[PROFILE_SLOTS], calls[PROFILE_SLOTS];
+  uint8_t placed[PROFILE_SLOTS];
+  uint32_t hooked_calls = 0;
   for (int i = 0; i < PROFILE_SLOTS; i++) {
-    delta[i] = slots[i].live ? slots[i].total_us - slots[i].last_total_us : 0;
-    shown[i] = 0;
+    ms[i] = slots[i].live ? (slots[i].total_us - slots[i].last_total_us) / 1000 : 0;
+    calls[i] = slots[i].live ? slots[i].calls - slots[i].last_calls : 0;
+    placed[i] = !slots[i].live;
+    hooked_calls += calls[i];
   }
 
-  char line[512];
+  char line[420];
   int at = 0;
-  for (int n = 0; n < 8; n++) {
+  for (;;) {
     int best = -1;
     for (int i = 0; i < PROFILE_SLOTS; i++)
-      if (!shown[i] && delta[i] && (best < 0 || delta[i] > delta[best]))
+      if (!placed[i] && calls[i] && (best < 0 || ms[i] > ms[best]))
         best = i;
     if (best < 0)
       break;
-    shown[best] = 1;
-    ProfileSlot *s = &slots[best];
+    placed[best] = 1;
     int room = (int)sizeof(line) - at;
-    int put = snprintf(line + at, room, "%s%s %d ms/%u (worst %u ms)", at ? " | " : "",
-                       targets[best].shown, (int)(delta[best] / 1000), s->calls - s->last_calls,
-                       s->worst_us / 1000);
+    int put = snprintf(line + at, room, "%s%s %u ms/%u (worst %u ms)", at ? " | " : "",
+                       targets[best].shown, ms[best], calls[best], slots[best].worst_us / 1000);
+    if (put < 0)
+      break;
+    if (put >= room) { // did not fit: flush what we have and put it on the next line
+      line[at] = 0;
+      traceLog("frame: %s\n", line);
+      at = 0;
+      placed[best] = 0;
+      continue;
+    }
+    at += put;
+  }
+  if (at)
+    traceLog("frame: %s\n", line);
+
+  // Hooked, and not called once all session. Cumulative, not this interval: a
+  // slot that ran earlier and is quiet now is not the same as one that has never
+  // run at all, and only the second is worth saying.
+  at = 0;
+  int silent = 0;
+  for (int i = 0; i < PROFILE_SLOTS; i++) {
+    if (!slots[i].live || slots[i].calls)
+      continue;
+    silent++;
+    int room = (int)sizeof(line) - at;
+    int put = snprintf(line + at, room, "%s%s", at ? " " : "", targets[i].shown);
     if (put < 0 || put >= room)
       break;
     at += put;
   }
-  // Rolled forward whether or not it made the line, so a slot that is quiet for
-  // a heartbeat does not report that quiet interval's work in the next one.
+  // The profiler's own load, so its cost is judged from the log rather than
+  // assumed: two clock reads per call, and the count is right here.
+  traceLog("frame idle: %d never called (%s) | %u hooked calls this interval\n", silent,
+           at ? line : "none", hooked_calls);
+
   for (int i = 0; i < PROFILE_SLOTS; i++) {
     slots[i].last_total_us = slots[i].total_us;
     slots[i].last_calls = slots[i].calls;
   }
-  if (at)
-    traceLog("frame: %s\n", line);
 }
