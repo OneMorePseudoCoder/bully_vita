@@ -59,6 +59,9 @@ typedef struct {
   // which is nothing a few hundred times a load and real thousands of times a
   // second.
   uint8_t watch_io;
+  // Set only for an unmangled C name whose prologue has actually been read to
+  // confirm it takes four words of arguments or fewer.
+  uint8_t args_checked;
 } ProfileTarget;
 
 static const ProfileTarget targets[] = {
@@ -151,9 +154,8 @@ static const ProfileTarget targets[] = {
     // and only the first of those has ever been visible here. The second is
     // invisible to the fread counters because the fread happens on the other
     // thread.
-    {"CdStreamSync", "cd sync", 1},
-    {"CdStreamRead", "cd read", 1},
-    {"CdStreamRequestResource", "cd request", 1},
+    {"CdStreamSync", "cd sync", 1, 1},   // CdStreamSync(int): one argument
+    {"CdStreamRequestResource", "cd request", 1, 1}, // reads nothing above its frame
     {"_Z13GetObjectNamei", "obj name", 1},
     {"_ZN17BullyGameRenderer10VerifyMeshERK7string8", "verify mesh", 1},
     {"_ZN10CStreaming16GetCdImageOffsetEi", "cd offset", 1},
@@ -523,6 +525,17 @@ void frame_profile_init(void) {
     }
     int thumb = entry & 1;
     uintptr_t addr = entry & ~(uintptr_t)1;
+    // Refuse anything with more than four words of arguments, and anything
+    // whose arity cannot be established at all. The thunk shifts sp by eight
+    // before calling the original, so a fifth argument would be read from the
+    // wrong place -- which is what CdStreamRead did, and it took the game with
+    // it. args_checked is for the handful of C names that carry no arity: it
+    // means somebody disassembled the function and looked.
+    int words = mangled_arg_words(targets[i].symbol);
+    if (words > 4 || (words < 0 && !targets[i].args_checked)) {
+      traceLog("frame profile: %s takes %d argument words, left alone\n", targets[i].shown, words);
+      continue;
+    }
     // hook_addr writes eight bytes, preceded by a NOP when the entry is not on
     // a four byte boundary. Take back exactly what it will overwrite.
     int need = 8 + ((addr & 2) ? 2 : 0);

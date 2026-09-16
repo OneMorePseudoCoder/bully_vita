@@ -241,3 +241,132 @@ int prologue_relocatable(const uint8_t *code, int thumb, int need) {
   return taken;
 }
 
+/*
+ * Arguments that arrive on the stack
+ *
+ * The thunk that calls a hooked function pushes two registers first, so the
+ * function runs with sp eight bytes lower than its caller left it. Anything it
+ * reads from its own frame is fine -- it built that frame itself -- but an
+ * argument past the fourth arrives on the caller's stack, and reading it lands
+ * eight bytes from where it is.
+ *
+ * That is not hypothetical. CdStreamRead does
+ *
+ *     add  r7, sp, #16        ; its own frame
+ *     ldr  r6, [r7, #24]      ; the fifth argument
+ *     ldr  r5, [r7, #28]      ; the sixth
+ *
+ * and forwards seven arguments to CdStreamReadFrom. Hooked, it read two words
+ * of the wrong stack as arguments, put them into the streaming structures, and
+ * CdStreamThread died on the pointer that came back out.
+ *
+ * The rule was in the target table from the first version of this file and was
+ * then broken by adding three C symbols whose argument count cannot be read off
+ * an unmangled name. The first attempt at enforcing it disassembled the body
+ * looking for loads above the frame; that flagged nine functions which had been
+ * hooked for a dozen builds without trouble, CPed::ProcessControl among them,
+ * and still missed CdStreamReadFrom. Guessing at frame layout is the wrong
+ * tool.
+ *
+ * The mangled name says it exactly, so read that instead. Returns the number of
+ * argument words, or -1 for a name this cannot parse -- and an unparsed name is
+ * refused by the caller rather than assumed safe, which is the whole lesson.
+ */
+// Steps over a nested name, _ZN...E. Its components are length prefixed, so
+// scanning for the closing E character is wrong -- ProcessEntityCollision has
+// one in the middle of it, and the first version of this stopped there.
+static const char *skip_nested(const char *s) {
+  while (*s && *s != 'E') {
+    if (*s >= '0' && *s <= '9') {
+      int n = 0;
+      while (*s >= '0' && *s <= '9')
+        n = n * 10 + (*s++ - '0');
+      while (n-- && *s)
+        s++;
+    } else {
+      s++; // CV qualifiers, S_ substitutions and the like
+    }
+  }
+  return *s == 'E' ? s + 1 : s;
+}
+
+static int type_words(const char **p) {
+  const char *s = *p;
+  int indirect = 0;
+  for (;;) {
+    char c = *s;
+    if (c == 'P' || c == 'R' || c == 'O') {
+      indirect = 1; // behind a pointer or reference, even void is one word
+      s++;
+      continue;
+    }
+    if (c == 'K' || c == 'V' || c == 'r') {
+      s++;
+      continue;
+    }
+    break;
+  }
+  char c = *s;
+  if (indirect && c == 'v') {
+    *p = s + 1;
+    return 1;
+  }
+  if (c == 'N') { // nested name
+    *p = skip_nested(s + 1);
+    return 1;
+  }
+  if (c >= '1' && c <= '9') { // <length><name>
+    int n = 0;
+    while (*s >= '0' && *s <= '9')
+      n = n * 10 + (*s++ - '0');
+    while (n-- && *s)
+      s++;
+    *p = s;
+    return 1;
+  }
+  if (c == 'v') { // void: no argument at all
+    *p = s + 1;
+    return 0;
+  }
+  if (c == 'd' || c == 'x' || c == 'y' || c == 'e' || c == 'g') {
+    *p = s + 1;
+    return 2; // double and long long take two words
+  }
+  if (c == 'b' || c == 'c' || c == 'a' || c == 'h' || c == 's' || c == 't' || c == 'i' ||
+      c == 'j' || c == 'l' || c == 'm' || c == 'f' || c == 'w' || c == 'z') {
+    *p = s + 1;
+    return 1;
+  }
+  return -1; // something this parser does not know: refuse rather than guess
+}
+
+int mangled_arg_words(const char *sym) {
+  if (!sym || sym[0] != '_' || sym[1] != 'Z')
+    return -1; // a plain C name says nothing about its arity
+  const char *s = sym + 2;
+  int words = 0;
+  if (*s == 'N') { // a member function: the this pointer is the first word
+    words = 1;
+    s = skip_nested(s + 1);
+  } else {
+    while (*s >= '0' && *s <= '9') {
+      int n = 0;
+      while (*s >= '0' && *s <= '9')
+        n = n * 10 + (*s++ - '0');
+      while (n-- && *s)
+        s++;
+      break;
+    }
+  }
+  if (!*s)
+    return -1;
+  while (*s) {
+    int w = type_words(&s);
+    if (w < 0)
+      return -1;
+    words += w;
+    if (words > 64)
+      return -1;
+  }
+  return words;
+}

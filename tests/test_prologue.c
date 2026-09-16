@@ -174,6 +174,48 @@ int main(void) {
   }
   printf("bounds       : nothing written past the buffer end       OK\n");
 
+  // Arity, read off the mangled name rather than guessed at from the frame.
+  //
+  // This is the check that was missing when CdStreamRead was hooked. It takes
+  // seven words, reads the fifth and sixth off its caller's stack, and the
+  // thunk shifts that stack by eight -- so it fed two words of garbage into the
+  // streaming structures and CdStreamThread crashed on what came back out.
+  {
+    static const struct { const char *sym; int words; const char *what; } arity[] = {
+        {"_ZN4CPed14ProcessControlEv", 1, "a member function with no arguments is just this"},
+        {"_ZN5CGame7ProcessEv", 1, "likewise"},
+        {"_ZN9LuaScript6UpdateEb", 2, "this and a bool"},
+        {"_ZN11Application8ClampFPSEd", 3, "a double takes two words, so this is three"},
+        {"_Z10MainThreadPv", 1, "void* is a word -- v behind a P is not void"},
+        {"_ZN21AreaTransitionManager8LoadAreaERK7CVector", 2, "this and a const reference"},
+        {"_ZN9CColStore7LoadColEiPhi", 4, "exactly four, which is allowed"},
+        {"_ZN10CStreaming21ConvertBufferToObjectEPcib", 4, "four again"},
+        {"_ZN10CStreaming18ConvertMeshToModelEP4MeshiP14CStreamingInfoP14CBaseModelInfo", 5,
+         "five: hooked for two builds before this check existed"},
+        {"_ZN4CPed22ProcessEntityCollisionER7CMatrixP7CEntityP9CColPointb", 5,
+         "five, and the name has an E inside it that must not end the parse"},
+        {"_Z16CdStreamReadFromP14FileReadBufferiPvjjP8Resourcei", 7, "the seven that crashed it"},
+        {"CdStreamRead", -1, "an unmangled C name states nothing and must be refused"},
+        {"_Z13LoadingScreenPKcS0_", -1, "a substitution this parser does not do: refuse, not guess"},
+    };
+    for (unsigned k = 0; k < sizeof(arity) / sizeof(arity[0]); k++) {
+      int got = mangled_arg_words(arity[k].sym);
+      if (got != arity[k].words) {
+        printf("arity        : %s\n  wanted %d, got %d for %s\n", arity[k].what, arity[k].words,
+               got, arity[k].sym);
+        assert(0 && "argument word count is wrong");
+      }
+    }
+    // The decision the profiler actually makes, stated once: four or fewer and
+    // parsed, or it is not hooked.
+    assert(mangled_arg_words("_ZN9CColStore7LoadColEiPhi") <= 4 && "four words is allowed");
+    assert(mangled_arg_words("_Z16CdStreamReadFromP14FileReadBufferiPvjjP8Resourcei") > 4 &&
+           "seven words is refused");
+    assert(mangled_arg_words("CdStreamRead") < 0 && "an unparsed name is refused");
+    printf("arity        : %u mangled names counted, five-word and unparsed both refused  OK\n",
+           (unsigned)(sizeof(arity) / sizeof(arity[0])));
+  }
+
   // And against the real thing, if it is to hand.
   const char *so = getenv("BULLY_SO");
   if (so) {

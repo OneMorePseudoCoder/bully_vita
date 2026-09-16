@@ -22,4 +22,11 @@ int prologue_relocate(uintptr_t addr, const uint8_t *src, int thumb, int need, u
 // or 0. For surveying a binary that is not loaded.
 int prologue_relocatable(const uint8_t *code, int thumb, int need);
 
+// How many words of arguments does this mangled name declare, counting the this
+// pointer? Anything past four arrives on the caller's stack and cannot be
+// wrapped by a thunk that pushes. Returns -1 for a name it cannot parse --
+// including any unmangled C name -- and the caller must refuse those too.
+// See the note in prologue.c.
+int mangled_arg_words(const char *sym);
+
 #endif
