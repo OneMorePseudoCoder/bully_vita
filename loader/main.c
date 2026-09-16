@@ -411,6 +411,28 @@ int thread_stub(SceSize args, uintptr_t *argp) {
 // Sound with cpu 0 and priority 3
 // RenderThread with cpu 2 and priority 3
 // CDStreamThread with cpu 0 and priority 3
+//
+// CDStreamThread is off core 0 again, and this time at 127 rather than 65.
+//
+// Core 1 spends 2.32 ms of every frame inside GameRenderer::RenderGame, which
+// is not drawing: it is WaitForRenderToFinish, a loop that takes a mutex, reads
+// a flag, releases it and sleeps a millisecond until the render thread says the
+// frame is done. So whatever delays the end of the frame on core 0 is added
+// directly to core 1.
+//
+// At 65 this thread could not delay RenderThread, which is 64. But the vitaGL
+// collector on core 0 is 127, vglSwapBuffers waits on it before presenting, and
+// 65 preempts 127 -- so every time the game streamed, the one thread that "must
+// never be stuck behind a busy one" was stuck behind a thread reaching 37%.
+//
+// It was on core 2 before, and it was moved away because at 65 it sat above the
+// frame thread's 127 and took the core off it -- the stutter this layout was
+// written to fix. Both facts are about the priority, not the core: at 127 it is
+// level with the frame thread and the backup writer, so the three share core 2
+// round-robin and none of them can starve another. Core 2 is 15% busy.
+//
+// Core 3 would have been lighter still at 6%, but Sound is there at 65, and an
+// audio thread is the wrong thing to make share with a thread that bursts.
 void *OS_ThreadLaunch(int (* func)(), void *arg, int cpu, char *name, int unused, int priority) {
   int vita_priority;
   int vita_affinity;
@@ -423,8 +445,8 @@ void *OS_ThreadLaunch(int (* func)(), void *arg, int cpu, char *name, int unused
       vita_priority = 64;
       vita_affinity = core_layout_fixed ? 0x10000 : 0x20000;
     } else if (strcmp(name, "CDStreamThread") == 0) {
-      vita_priority = 65;
-      vita_affinity = core_layout_fixed ? 0x10000 : 0x40000;
+      vita_priority = core_layout_fixed ? 127 : 65;
+      vita_affinity = core_layout_fixed ? 0x40000 : 0x40000;
     } else if (strcmp(name, "Sound") == 0) {
       vita_priority = 65;
       vita_affinity = 0x80000;
@@ -440,8 +462,8 @@ void *OS_ThreadLaunch(int (* func)(), void *arg, int cpu, char *name, int unused
       vita_priority = 64;
       vita_affinity = core_layout_fixed ? 0x10000 : 0x20000;
     } else if (strcmp(name, "CDStreamThread") == 0) {
-      vita_priority = 65;
-      vita_affinity = core_layout_fixed ? 0x10000 : 0x40000;
+      vita_priority = core_layout_fixed ? 127 : 65;
+      vita_affinity = core_layout_fixed ? 0x40000 : 0x40000;
     } else if (strcmp(name, "Sound") == 0) {
       vita_priority = 65;
       vita_affinity = 0x20000;
@@ -1097,8 +1119,7 @@ int main(int argc, char *argv[]) {
   traceLog("threads: %s -- frame core 2, game core %d, render core %d, "
            "streaming core %d, display queue core 0 (fixed)\n",
            core_layout_fixed ? "rebalanced" : "as upstream",
-           core_layout_fixed ? 1 : 0, core_layout_fixed ? 0 : 1,
-           core_layout_fixed ? 0 : 2);
+           core_layout_fixed ? 1 : 0, core_layout_fixed ? 0 : 1, 2);
   traceLog("threads: vitaGL collector core %d at priority 127, and the swap "
            "waits on it\n", core_layout_fixed ? 0 : 1);
 
