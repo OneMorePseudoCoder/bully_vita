@@ -184,6 +184,12 @@
 // to carry that risk: create this file to ask for the measurement.
 #define FRAME_PROFILE_PATH DATA_PATH "/" "frame_profile"
 
+// Also opt IN. The game limits its own frame rate and was measured sleeping
+// four to six milliseconds of every thirty-six to do it; this switches that off.
+// Not on by default, because a game written to a frame budget runs hotter
+// without one and anything frame rate dependent in it will move faster.
+#define FPS_CAP_DISABLE_PATH DATA_PATH "/" "no_fps_cap"
+
 // How long a vertex buffer must go unlocked before the loader takes back the
 // CPU-side copy of its data. The game keeps that copy for the life of the
 // buffer so it can be locked again without reading back from the GPU, which is

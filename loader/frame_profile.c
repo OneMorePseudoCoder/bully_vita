@@ -32,6 +32,7 @@
 #include "so_util.h"
 #include "frame_profile.h"
 #include "prologue.h"
+#include "fps_cap.h"
 
 // kubridge takes kernel memblock types and vitasdk keeps this one to itself.
 #ifndef SCE_KERNEL_MEMBLOCK_TYPE_USER_RX
@@ -531,6 +532,11 @@ void frame_profile_init(void) {
     // wrong place -- which is what CdStreamRead did, and it took the game with
     // it. args_checked is for the handful of C names that carry no arity: it
     // means somebody disassembled the function and looked.
+    // The cap lift owns ClampFPS when it is on; hook_addr cannot share.
+    if (fps_cap_lifted && !strcmp(targets[i].shown, "clampfps")) {
+      traceLog("frame profile: clampfps belongs to the cap lift this run\n");
+      continue;
+    }
     int words = mangled_arg_words(targets[i].symbol);
     if (words > 4 || (words < 0 && !targets[i].args_checked)) {
       traceLog("frame profile: %s takes %d argument words, left alone\n", targets[i].shown, words);
