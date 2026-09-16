@@ -127,6 +127,40 @@ static const ProfileTarget targets[] = {
     {"_ZN11SoundSystem4TickEf", "sound tick"},
     {"_ZN10RendererES6UpdateEf", "rend update"},
 
+    // Inside app inner, outside CGame::Process, is 5.85 ms a frame, and inside
+    // app render is another 3.31 ms that barely moves with the scene -- 3.07 to
+    // 3.62 across every settled heartbeat of a session while app tick itself
+    // swung from 35.9 to 21.7.
+    //
+    // Neither is more simulation. BullyApplication::appTick calls OrigTick,
+    // and OrigTick runs CGame::Process and then builds and submits the frame:
+    // reflections, the render list, the HUD, the 2d pass, the effects. And
+    // appRender is GameRend->UpdateGame followed by GameRend->RenderGame, where
+    // GameRend is a BullyGameRenderer -- so take the override, not the base,
+    // which is the mistake the previous pair of targets made.
+    //
+    // So about nine milliseconds of core 1 is render-side work standing next to
+    // a render thread that already exists and already runs WorldSceneView.
+    // Which of these carries it is what these measure.
+    //
+    // ConstructRenderList, UpdateShoreFoam and Render2dStuff are missing here
+    // because their prologues will not relocate. They are refused at boot and
+    // named in the log rather than guessed at.
+    {"_ZN17BullyGameRenderer10UpdateGameEf", "game upd"},
+    {"_ZN17BullyGameRenderer10RenderGameEv", "game render"},
+    {"_ZN17ReflectionManager20RenderReflectedSceneEv", "reflections"},
+    {"_ZN14CChannelFilter6RenderEv", "chan filter"},
+    {"_ZN17WindowGlowManager6RenderEv", "win glow"},
+    {"_ZN4CHud4DrawEv", "hud draw"},
+    {"_ZN9CRenderer9PreRenderEv", "prerender"},
+    {"_ZN13EffectManager6RenderEb", "fx render"},
+    {"_ZN19EffectRenderManager11BeginRenderEP8RwCamera", "fx begin"},
+    {"_Z13RenderEffectsb", "fx 2d"},
+    {"_Z22Render2dStuffAfterFadev", "2d fade"},
+    {"_ZN19cSCREAMAudioManager7ServiceEv", "scream svc"},
+    {"_ZN7CObject9UpdateAllEv", "obj update"},
+    {"_ZN6CTimer6UpdateEb", "ctimer"},
+
     {"_ZN5CGame7ProcessEv", "CGame"},
     {"_ZN6CWorld7ProcessEv", "CWorld"},
     {"_ZN14WorldSceneView6RenderEv", "scene draw"},
@@ -229,7 +263,7 @@ static const ProfileTarget targets[] = {
 #define PROFILE_SLOTS ((int)(sizeof(targets) / sizeof(targets[0])))
 // One thunk per slot, and the thunks are written out by hand because each has to
 // know which slot it stands for. Adding a target past this needs another one.
-#define PROFILE_THUNKS 72
+#define PROFILE_THUNKS 88
 _Static_assert(PROFILE_SLOTS <= PROFILE_THUNKS, "more targets than thunks to reach them with");
 #define TRAMPOLINE_BYTES 64
 
@@ -296,7 +330,11 @@ __asm__(".syntax unified\n"
         "FPTHUNK 54\n FPTHUNK 55\n FPTHUNK 56\n FPTHUNK 57\n FPTHUNK 58\n FPTHUNK 59\n"
         "FPTHUNK 60\n FPTHUNK 61\n FPTHUNK 62\n FPTHUNK 63\n"
         "FPTHUNK 64\n FPTHUNK 65\n FPTHUNK 66\n FPTHUNK 67\n"
-        "FPTHUNK 68\n FPTHUNK 69\n FPTHUNK 70\n FPTHUNK 71\n");
+        "FPTHUNK 68\n FPTHUNK 69\n FPTHUNK 70\n FPTHUNK 71\n"
+        "FPTHUNK 72\n FPTHUNK 73\n FPTHUNK 74\n FPTHUNK 75\n"
+        "FPTHUNK 76\n FPTHUNK 77\n FPTHUNK 78\n FPTHUNK 79\n"
+        "FPTHUNK 80\n FPTHUNK 81\n FPTHUNK 82\n FPTHUNK 83\n"
+        "FPTHUNK 84\n FPTHUNK 85\n FPTHUNK 86\n FPTHUNK 87\n");
 
 extern void frame_profile_thunk_0(void);
 extern void frame_profile_thunk_1(void);
@@ -370,6 +408,22 @@ extern void frame_profile_thunk_68(void);
 extern void frame_profile_thunk_69(void);
 extern void frame_profile_thunk_70(void);
 extern void frame_profile_thunk_71(void);
+extern void frame_profile_thunk_72(void);
+extern void frame_profile_thunk_73(void);
+extern void frame_profile_thunk_74(void);
+extern void frame_profile_thunk_75(void);
+extern void frame_profile_thunk_76(void);
+extern void frame_profile_thunk_77(void);
+extern void frame_profile_thunk_78(void);
+extern void frame_profile_thunk_79(void);
+extern void frame_profile_thunk_80(void);
+extern void frame_profile_thunk_81(void);
+extern void frame_profile_thunk_82(void);
+extern void frame_profile_thunk_83(void);
+extern void frame_profile_thunk_84(void);
+extern void frame_profile_thunk_85(void);
+extern void frame_profile_thunk_86(void);
+extern void frame_profile_thunk_87(void);
 
 static void (*const thunks[])(void) = {
     frame_profile_thunk_0, frame_profile_thunk_1, frame_profile_thunk_2, frame_profile_thunk_3,
@@ -390,6 +444,10 @@ static void (*const thunks[])(void) = {
     frame_profile_thunk_60, frame_profile_thunk_61, frame_profile_thunk_62, frame_profile_thunk_63,
     frame_profile_thunk_64, frame_profile_thunk_65, frame_profile_thunk_66, frame_profile_thunk_67,
     frame_profile_thunk_68, frame_profile_thunk_69, frame_profile_thunk_70, frame_profile_thunk_71,
+    frame_profile_thunk_72, frame_profile_thunk_73, frame_profile_thunk_74, frame_profile_thunk_75,
+    frame_profile_thunk_76, frame_profile_thunk_77, frame_profile_thunk_78, frame_profile_thunk_79,
+    frame_profile_thunk_80, frame_profile_thunk_81, frame_profile_thunk_82, frame_profile_thunk_83,
+    frame_profile_thunk_84, frame_profile_thunk_85, frame_profile_thunk_86, frame_profile_thunk_87,
 };
 
 static uint32_t profile_now_us(void) {
