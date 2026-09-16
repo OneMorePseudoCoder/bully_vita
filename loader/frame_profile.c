@@ -64,6 +64,28 @@ typedef struct {
 static const ProfileTarget targets[] = {
     // The frame, top down. CWorld::Process is called only from CGame::Process,
     // so these nest and their times are inclusive.
+    // The loop above CGame::Process, which nothing had ever measured.
+    //
+    // GameMain is 74% busy on a 35.4 ms frame -- 26.2 ms of work -- and
+    // CGame::Process is only 15.0 ms of it. The other 11.2 ms is up here, and
+    // one of these is a frame limiter: Application::ClampFPS reads a target rate
+    // off the Application object and, when it is set, burns or sleeps until the
+    // frame has taken long enough.
+    //
+    // Which decides whether any of the rest is worth doing. If ClampFPS is
+    // sleeping nine milliseconds a frame then the game is capped rather than
+    // limited, GameMain is not the bottleneck, and taking 4.17 ms off the ped
+    // loop buys exactly nothing -- it would sleep 4.17 ms longer instead. If
+    // ClampFPS returns immediately then the frame really is full and the ped
+    // arithmetic stands. Seven hooks settle a question worth months.
+    {"_Z10MainThreadPv", "MainThread"},
+    {"_ZN11Application4TickEf", "app tick"},
+    {"_ZN11Application8ClampFPSEd", "clampfps"},
+    {"_ZN11Application17PerformFullUpdateEf", "full update"},
+    {"_ZN9UserInput6UpdateEf", "userinput"},
+    {"_ZN8UISystem8RenderUIEv", "render ui"},
+    {"_Z15LIB_InputUpdatei", "lib input"},
+
     {"_ZN5CGame7ProcessEv", "CGame"},
     {"_ZN6CWorld7ProcessEv", "CWorld"},
     {"_ZN14WorldSceneView6RenderEv", "scene draw"},
@@ -147,7 +169,7 @@ static const ProfileTarget targets[] = {
 #define PROFILE_SLOTS ((int)(sizeof(targets) / sizeof(targets[0])))
 // One thunk per slot, and the thunks are written out by hand because each has to
 // know which slot it stands for. Adding a target past this needs another one.
-#define PROFILE_THUNKS 48
+#define PROFILE_THUNKS 64
 _Static_assert(PROFILE_SLOTS <= PROFILE_THUNKS, "more targets than thunks to reach them with");
 #define TRAMPOLINE_BYTES 64
 
@@ -206,7 +228,10 @@ __asm__(".syntax unified\n"
         "FPTHUNK 24\n FPTHUNK 25\n FPTHUNK 26\n FPTHUNK 27\n FPTHUNK 28\n FPTHUNK 29\n"
         "FPTHUNK 30\n FPTHUNK 31\n FPTHUNK 32\n FPTHUNK 33\n FPTHUNK 34\n FPTHUNK 35\n"
         "FPTHUNK 36\n FPTHUNK 37\n FPTHUNK 38\n FPTHUNK 39\n FPTHUNK 40\n FPTHUNK 41\n"
-        "FPTHUNK 42\n FPTHUNK 43\n FPTHUNK 44\n FPTHUNK 45\n FPTHUNK 46\n FPTHUNK 47\n");
+        "FPTHUNK 42\n FPTHUNK 43\n FPTHUNK 44\n FPTHUNK 45\n FPTHUNK 46\n FPTHUNK 47\n"
+        "FPTHUNK 48\n FPTHUNK 49\n FPTHUNK 50\n FPTHUNK 51\n FPTHUNK 52\n FPTHUNK 53\n"
+        "FPTHUNK 54\n FPTHUNK 55\n FPTHUNK 56\n FPTHUNK 57\n FPTHUNK 58\n FPTHUNK 59\n"
+        "FPTHUNK 60\n FPTHUNK 61\n FPTHUNK 62\n FPTHUNK 63\n");
 
 extern void frame_profile_thunk_0(void);
 extern void frame_profile_thunk_1(void);
@@ -256,6 +281,22 @@ extern void frame_profile_thunk_44(void);
 extern void frame_profile_thunk_45(void);
 extern void frame_profile_thunk_46(void);
 extern void frame_profile_thunk_47(void);
+extern void frame_profile_thunk_48(void);
+extern void frame_profile_thunk_49(void);
+extern void frame_profile_thunk_50(void);
+extern void frame_profile_thunk_51(void);
+extern void frame_profile_thunk_52(void);
+extern void frame_profile_thunk_53(void);
+extern void frame_profile_thunk_54(void);
+extern void frame_profile_thunk_55(void);
+extern void frame_profile_thunk_56(void);
+extern void frame_profile_thunk_57(void);
+extern void frame_profile_thunk_58(void);
+extern void frame_profile_thunk_59(void);
+extern void frame_profile_thunk_60(void);
+extern void frame_profile_thunk_61(void);
+extern void frame_profile_thunk_62(void);
+extern void frame_profile_thunk_63(void);
 
 static void (*const thunks[])(void) = {
     frame_profile_thunk_0, frame_profile_thunk_1, frame_profile_thunk_2, frame_profile_thunk_3,
@@ -270,6 +311,10 @@ static void (*const thunks[])(void) = {
     frame_profile_thunk_36, frame_profile_thunk_37, frame_profile_thunk_38, frame_profile_thunk_39,
     frame_profile_thunk_40, frame_profile_thunk_41, frame_profile_thunk_42, frame_profile_thunk_43,
     frame_profile_thunk_44, frame_profile_thunk_45, frame_profile_thunk_46, frame_profile_thunk_47,
+    frame_profile_thunk_48, frame_profile_thunk_49, frame_profile_thunk_50, frame_profile_thunk_51,
+    frame_profile_thunk_52, frame_profile_thunk_53, frame_profile_thunk_54, frame_profile_thunk_55,
+    frame_profile_thunk_56, frame_profile_thunk_57, frame_profile_thunk_58, frame_profile_thunk_59,
+    frame_profile_thunk_60, frame_profile_thunk_61, frame_profile_thunk_62, frame_profile_thunk_63,
 };
 
 static uint32_t profile_now_us(void) {
