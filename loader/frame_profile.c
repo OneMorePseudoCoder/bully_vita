@@ -139,6 +139,26 @@ static const ProfileTarget targets[] = {
     {"_ZN11CPopulation32UpdatePopulationOnAreaTransitionEv", "pop area", 1},
     {"_ZN18cSCREAMBankManager14AreaTransitionEv", "sound area", 1},
 
+    // Where the rest of LoadAllRequestedModels goes.
+    //
+    // Its convert step was 6516 ms of a 13628 ms load, and the reads and opens
+    // charged to it were 5821 of those. That leaves 7112 ms inside
+    // LoadAllRequestedModels and outside convert, and the call graph says what
+    // is there: CdStreamSync, which blocks until the streaming thread has
+    // finished a read it issued with CdStreamRead. So the load reads twice over
+    // -- synchronously inside convert on the game's own thread, and
+    // asynchronously on CDStreamThread with the game waiting on the result --
+    // and only the first of those has ever been visible here. The second is
+    // invisible to the fread counters because the fread happens on the other
+    // thread.
+    {"CdStreamSync", "cd sync", 1},
+    {"CdStreamRead", "cd read", 1},
+    {"CdStreamRequestResource", "cd request", 1},
+    {"_Z13GetObjectNamei", "obj name", 1},
+    {"_ZN17BullyGameRenderer10VerifyMeshERK7string8", "verify mesh", 1},
+    {"_ZN10CStreaming16GetCdImageOffsetEi", "cd offset", 1},
+    {"_ZN10CStreaming24MakeSpaceForMemoryObjectEii", "make space", 1},
+
     {"_ZN10CStreaming9LoadSceneERK7CVector", "load scene", 1},
     {"_ZN10CStreaming22LoadAllRequestedModelsEb", "load all", 1},
     {"_ZN10CStreaming15GetNextFileOnCdEib", "next file", 1},
