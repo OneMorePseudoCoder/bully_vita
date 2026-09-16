@@ -67,55 +67,68 @@ static const ProfileTarget targets[] = {
     {"_ZN13ScriptManager6UpdateEb", "script"},
     {"_ZN9LuaScript6UpdateEb", "lua"},
     {"_ZN13CameraManager6UpdateEv", "camera"},
+    {"_ZN11CPopulation6UpdateEb", "population"},
+    {"_ZN11CMissionMgr6UpdateEv", "mission"},
+    {"_ZN9CTxdStore14GarbageCollectEv", "txd gc"},
 
-    // Where CWorld::Process's time actually goes. It is 3140 bytes of code and
-    // spends fourteen milliseconds a frame, so the work is not in it: it walks
-    // the entity pools and calls each entity's ProcessControl through a vtable.
-    // Those calls are indirect and cannot be hooked where they are made, but the
-    // implementations have names, and hooking an implementation catches it
-    // however it was reached. This is the per entity loop, one level below where
-    // the first round looked.
-    {"_ZN11CAutomobile14ProcessControlEv", "car ctrl"},
-    {"_ZN11CAutomobile9PreRenderEv", "car pre"},
+    // The per entity loop, which is where CWorld::Process's time turned out to
+    // be: CPed::ProcessControl was 6.73 ms of a 35.4 ms frame, 51% of
+    // CWorld::Process, across 15.6 peds at 432 us each. The vehicle entries have
+    // never been called -- there were no cars where the last session was played,
+    // and CAutomobile::ProcessControl is the largest function in this table at
+    // 15388 bytes, so a session on a bike or in a car is still unmeasured.
     {"_ZN4CPed14ProcessControlEv", "ped ctrl"},
     {"_ZN4CPed9PreRenderEv", "ped pre"},
-    {"_ZN4CPed22ProcessEntityCollisionER7CMatrixP7CEntityP9CColPointb", "ped coll"},
     {"_ZN10CPlayerPed14ProcessControlEv", "player ctrl"},
     {"_ZN9CPhysical14ProcessControlEv", "phys ctrl"},
-    {"_ZN5CBike14ProcessControlEv", "bike ctrl"},
-    {"_ZN7CObject14ProcessControlEv", "obj ctrl"},
-    {"_ZN7CEntity9PreRenderEv", "ent pre"},
     {"_ZN7CEntity19UpdateAnimPreRenderEv", "ent anim"},
+    {"_ZN11CAutomobile14ProcessControlEv", "car ctrl"},
+    {"_ZN11CAutomobile9PreRenderEv", "car pre"},
+    {"_ZN5CBike14ProcessControlEv", "bike ctrl"},
 
-    // The rest of what CGame::Process calls. Between CWorld's fourteen
-    // milliseconds and CGame's twenty there are five and a half unaccounted for,
-    // and none of the first round's targets were in them.
-    {"_ZN11CPopulation6UpdateEb", "population"},
-    {"_ZN9GameLogic6UpdateEv", "gamelogic"},
-    {"_ZN11CMissionMgr6UpdateEv", "mission"},
-    {"_ZN12CCutsceneMgr6UpdateEv", "cutscene"},
-    {"_ZN9CParticle6UpdateEv", "particle"},
-    {"_ZN7Weather6UpdateEv", "weather"},
-    {"_ZN9Skidmarks6UpdateEv", "skidmarks"},
-    {"_ZN7Tagging6UpdateEv", "tagging"},
-    {"_ZN9CTxdStore14GarbageCollectEv", "txd gc"},
-    {"_ZN18PersistentEntities6UpdateEv", "persistent"},
-    {"_ZN16CObstacleManager23CheckForLoadedCollisionEv", "obst col"},
-    {"_ZN16CObstacleManager24CheckForDeferredEntitiesEv", "obst def"},
-
-    // The thirteen and a half second freeze. One call to AreaTransitionManager::
-    // Update took 13600 ms in the first profiled run, and CGame::Process's worst
-    // call of 13619 ms is the same event seen one level up. Its whole tree is
-    // here, so the next run says which part of it that was.
+    // The thirteen second freeze, and what it is made of.
+    //
+    // One call to AreaTransitionManager::LoadArea took 13132 ms -- 99.7% of the
+    // 13169 ms the whole transition cost, and it happened five times in a 150
+    // second session (13132, 3077, 6201, 1021, 270 ms). CGame::TidyUpMemory was
+    // six milliseconds of it, so it is not memory being tidied.
+    //
+    // Under LoadArea is CStreaming::LoadScene, which loads every model and every
+    // collision file the new area needs, synchronously, off the memory card --
+    // CColStore::EnsureCollisionIsInMemory even wraps its work in CTimer::
+    // Suspend and Resume, so the engine knows it is about to block. The whole
+    // tree is here so the next run says which part of it the thirteen seconds
+    // were: seeking for files, reading them, converting them, or waiting on
+    // sound banks.
     {"_ZN21AreaTransitionManager6UpdateEv", "area"},
     {"_ZN21AreaTransitionManager32UpdateAreaTransitionStateMachineEv", "area sm"},
     {"_ZN21AreaTransitionManager40UpdateBlockingAreaTransitionStateMachineEv", "area block"},
     {"_ZN21AreaTransitionManager8LoadAreaERK7CVector", "area load"},
+    {"_ZN21AreaTransitionManager14ClearAreaPropsERK15VisibleAreaEnum", "area props"},
+    {"_ZN21AreaTransitionManager21HandlePropActionTreesEv", "area trees"},
     {"_ZN5CGame12TidyUpMemoryEbb", "tidy mem"},
     {"_ZN13ScriptManager15StopAreaScriptsEv", "script stop"},
     {"_ZN11CPedManager12ShutDownPedsEv", "peds shut"},
+    {"_ZN11CPopulation32UpdatePopulationOnAreaTransitionEv", "pop area"},
+    {"_ZN18cSCREAMBankManager14AreaTransitionEv", "sound area"},
+
+    {"_ZN10CStreaming9LoadSceneERK7CVector", "load scene"},
+    {"_ZN10CStreaming22LoadAllRequestedModelsEb", "load all"},
+    {"_ZN10CStreaming15GetNextFileOnCdEib", "next file"},
+    {"_ZN10CStreaming21ConvertBufferToObjectEPcib", "convert"},
+    {"_ZN10CStreaming12RequestModelEii", "req model"},
+    {"_ZN10CStreaming11RemoveModelEi", "rm model"},
+    {"_ZN10CStreaming22AddModelsToRequestListERK7CVectorj", "add reqs"},
+    {"_ZN10CStreaming20InstanceLoadedModelsERK7CVector", "instance"},
+    {"_ZN10CStreaming24PostInstanceLoadedModelsERK7CVector", "post inst"},
+    {"_ZN10CStreaming13FlushChannelsEv", "flush ch"},
+    {"_ZN9CColStore13LoadCollisionERK9CVector2D", "col load"},
+    {"_ZN9CColStore7LoadColEiPhi", "col file"},
+    {"_ZN9CColStore25EnsureCollisionIsInMemoryERK9CVector2D", "col ensure"},
     {"_ZN9CColStore25SpecialHasCollisionLoadedERK9CVector2D", "col check"},
+    {"_Z13LoadingScreenPKcS0_", "loadscreen"},
 };
+
 
 
 #define PROFILE_SLOTS ((int)(sizeof(targets) / sizeof(targets[0])))
@@ -250,6 +263,46 @@ static uint32_t profile_now_us(void) {
   sceKernelGetProcessTime(&now);
   return (uint32_t)now;
 }
+
+/*
+ * What the card is doing while a frame method is slow
+ *
+ * The frame profiler says which function spent thirteen seconds. It cannot say
+ * whether that function spent them waiting on the memory card or working, and
+ * for CStreaming::LoadAllRequestedModels -- which reads every model an area
+ * needs, synchronously -- that is the whole question. So count the game's own
+ * reads and time them.
+ *
+ * On only when the profiler is, and a branch when it is not. The game's fread
+ * is not a hot path in the ordinary sense: a whole session made 65000 of them.
+ */
+unsigned io_opens, io_seeks, io_reads, io_bytes_kb, io_us;
+static unsigned io_bytes_part;
+
+void frame_profile_io_open(void) {
+  if (profiling)
+    io_opens++;
+}
+
+void frame_profile_io_seek(void) {
+  if (profiling)
+    io_seeks++;
+}
+
+unsigned frame_profile_io_begin(void) {
+  return profiling ? profile_now_us() : 0;
+}
+
+void frame_profile_io_end(unsigned started, unsigned bytes) {
+  if (!profiling)
+    return;
+  io_us += profile_now_us() - started;
+  io_reads++;
+  io_bytes_part += bytes;
+  io_bytes_kb += io_bytes_part >> 10;
+  io_bytes_part &= 1023;
+}
+
 
 void *frame_profile_enter(int slot) {
   ProfileSlot *s = &slots[slot];
@@ -447,8 +500,19 @@ void frame_profile_report(void) {
   }
   // The profiler's own load, so its cost is judged from the log rather than
   // assumed: two clock reads per call, and the count is right here.
+  static unsigned last_opens, last_seeks, last_reads, last_kb, last_io_us;
   traceLog("frame idle: %d never called (%s) | %u hooked calls this interval\n", silent,
            at ? line : "none", hooked_calls);
+  // The game's own reading, over the same interval, so a slow function can be
+  // told from a slow card.
+  traceLog("frame io: %u reads %u KB in %u ms | %u opens %u seeks\n", io_reads - last_reads,
+           io_bytes_kb - last_kb, (io_us - last_io_us) / 1000, io_opens - last_opens,
+           io_seeks - last_seeks);
+  last_opens = io_opens;
+  last_seeks = io_seeks;
+  last_reads = io_reads;
+  last_kb = io_bytes_kb;
+  last_io_us = io_us;
 
   for (int i = 0; i < PROFILE_SLOTS; i++) {
     slots[i].last_total_us = slots[i].total_us;

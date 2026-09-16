@@ -698,6 +698,27 @@ extern void *__gnu_ldivmod_helper;
 static FILE *stderr_fake;
 static FILE *stdin_fake;
 
+// The game's file calls, counted for the frame profiler and otherwise passed
+// straight through. See frame_profile.c: knowing that LoadAllRequestedModels
+// took thirteen seconds is only half an answer without knowing how much of it
+// was spent waiting on the card.
+static FILE *counted_fopen(const char *filename, const char *mode) {
+  frame_profile_io_open();
+  return sceLibcBridge_fopen(filename, mode);
+}
+
+static int counted_fseek(FILE *stream, long int offset, int origin) {
+  frame_profile_io_seek();
+  return sceLibcBridge_fseek(stream, offset, origin);
+}
+
+static size_t counted_fread(void *ptr, size_t size, size_t count, FILE *stream) {
+  unsigned t0 = frame_profile_io_begin();
+  size_t got = sceLibcBridge_fread(ptr, size, count, stream);
+  frame_profile_io_end(t0, (unsigned)(got * size));
+  return got;
+}
+
 static so_default_dynlib default_dynlib[] = {
   { "__android_log_assert", (uintptr_t)&__android_log_assert },
   { "__android_log_print", (uintptr_t)&__android_log_print },
@@ -788,12 +809,12 @@ static so_default_dynlib default_dynlib[] = {
   // { "fgetc", (uintptr_t)&fgetc },
   // { "fgets", (uintptr_t)&fgets },
 
-  { "fopen", (uintptr_t)&sceLibcBridge_fopen },
+  { "fopen", (uintptr_t)&counted_fopen },
   { "fprintf", (uintptr_t)&sceLibcBridge_fprintf },
   // { "fputc", (uintptr_t)&sceLibcBridge_fputc },
   // { "fputs", (uintptr_t)&sceLibcBridge_fputs },
-  { "fread", (uintptr_t)&sceLibcBridge_fread },
-  { "fseek", (uintptr_t)&sceLibcBridge_fseek },
+  { "fread", (uintptr_t)&counted_fread },
+  { "fseek", (uintptr_t)&counted_fseek },
   { "ftell", (uintptr_t)&sceLibcBridge_ftell },
   { "fwrite", (uintptr_t)&sceLibcBridge_fwrite },
 
