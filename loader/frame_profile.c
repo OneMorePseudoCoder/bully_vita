@@ -90,6 +90,30 @@ static const ProfileTarget targets[] = {
     {"_ZN8UISystem8RenderUIEv", "render ui"},
     {"_Z15LIB_InputUpdatei", "lib input"},
 
+    // The rest of Application::Tick, which is 13.0 ms of a 33.0 ms frame --
+    // thirty-nine per cent of core 1 -- and had no target at all.
+    //
+    // Tick reaches all of it through vtables, so a scan for direct calls finds
+    // nothing and the time lands in "app tick minus everything measured".
+    // Reading the vtables instead: PerformFullUpdate is GUI->slot(0x98) and
+    // then a tail call to Application::appTick, where GUI is a UISystem; and
+    // Tick ends with Application::appRender, gSoundSystem->slot(0x34) and
+    // globalRenderer->slot(0x1c).
+    //
+    // Two of those already own a thread somewhere else and are running here
+    // anyway: SoundSystem::Tick with the Sound thread on core 3 at 8%, and
+    // RendererES::Update with RenderThread on core 0. If either is worth
+    // milliseconds then it moves for the cost of a thread hand-off, which is a
+    // great deal cheaper than splitting the ped loop.
+    //
+    // All five take (this, float) -- two argument words -- so the stack
+    // argument rule that broke CdStreamRead does not reach them.
+    {"_ZN8UISystem6UpdateEf", "ui update"},
+    {"_ZN11Application7appTickEf", "app inner"},
+    {"_ZN11Application9appRenderEf", "app render"},
+    {"_ZN11SoundSystem4TickEf", "sound tick"},
+    {"_ZN10RendererES6UpdateEf", "rend update"},
+
     {"_ZN5CGame7ProcessEv", "CGame"},
     {"_ZN6CWorld7ProcessEv", "CWorld"},
     {"_ZN14WorldSceneView6RenderEv", "scene draw"},
@@ -192,7 +216,7 @@ static const ProfileTarget targets[] = {
 #define PROFILE_SLOTS ((int)(sizeof(targets) / sizeof(targets[0])))
 // One thunk per slot, and the thunks are written out by hand because each has to
 // know which slot it stands for. Adding a target past this needs another one.
-#define PROFILE_THUNKS 64
+#define PROFILE_THUNKS 72
 _Static_assert(PROFILE_SLOTS <= PROFILE_THUNKS, "more targets than thunks to reach them with");
 #define TRAMPOLINE_BYTES 64
 
@@ -257,7 +281,9 @@ __asm__(".syntax unified\n"
         "FPTHUNK 42\n FPTHUNK 43\n FPTHUNK 44\n FPTHUNK 45\n FPTHUNK 46\n FPTHUNK 47\n"
         "FPTHUNK 48\n FPTHUNK 49\n FPTHUNK 50\n FPTHUNK 51\n FPTHUNK 52\n FPTHUNK 53\n"
         "FPTHUNK 54\n FPTHUNK 55\n FPTHUNK 56\n FPTHUNK 57\n FPTHUNK 58\n FPTHUNK 59\n"
-        "FPTHUNK 60\n FPTHUNK 61\n FPTHUNK 62\n FPTHUNK 63\n");
+        "FPTHUNK 60\n FPTHUNK 61\n FPTHUNK 62\n FPTHUNK 63\n"
+        "FPTHUNK 64\n FPTHUNK 65\n FPTHUNK 66\n FPTHUNK 67\n"
+        "FPTHUNK 68\n FPTHUNK 69\n FPTHUNK 70\n FPTHUNK 71\n");
 
 extern void frame_profile_thunk_0(void);
 extern void frame_profile_thunk_1(void);
@@ -323,6 +349,14 @@ extern void frame_profile_thunk_60(void);
 extern void frame_profile_thunk_61(void);
 extern void frame_profile_thunk_62(void);
 extern void frame_profile_thunk_63(void);
+extern void frame_profile_thunk_64(void);
+extern void frame_profile_thunk_65(void);
+extern void frame_profile_thunk_66(void);
+extern void frame_profile_thunk_67(void);
+extern void frame_profile_thunk_68(void);
+extern void frame_profile_thunk_69(void);
+extern void frame_profile_thunk_70(void);
+extern void frame_profile_thunk_71(void);
 
 static void (*const thunks[])(void) = {
     frame_profile_thunk_0, frame_profile_thunk_1, frame_profile_thunk_2, frame_profile_thunk_3,
@@ -341,6 +375,8 @@ static void (*const thunks[])(void) = {
     frame_profile_thunk_52, frame_profile_thunk_53, frame_profile_thunk_54, frame_profile_thunk_55,
     frame_profile_thunk_56, frame_profile_thunk_57, frame_profile_thunk_58, frame_profile_thunk_59,
     frame_profile_thunk_60, frame_profile_thunk_61, frame_profile_thunk_62, frame_profile_thunk_63,
+    frame_profile_thunk_64, frame_profile_thunk_65, frame_profile_thunk_66, frame_profile_thunk_67,
+    frame_profile_thunk_68, frame_profile_thunk_69, frame_profile_thunk_70, frame_profile_thunk_71,
 };
 
 static uint32_t profile_now_us(void) {
