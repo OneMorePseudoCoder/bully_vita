@@ -54,6 +54,11 @@
 typedef struct {
   const char *symbol;
   const char *shown; // what to call it in the trace
+  // Charge the game's file reads made underneath this function to it. Only for
+  // ones called rarely: the attribution costs a sceKernelGetThreadId on entry,
+  // which is nothing a few hundred times a load and real thousands of times a
+  // second.
+  uint8_t watch_io;
 } ProfileTarget;
 
 static const ProfileTarget targets[] = {
@@ -100,33 +105,41 @@ static const ProfileTarget targets[] = {
     // tree is here so the next run says which part of it the thirteen seconds
     // were: seeking for files, reading them, converting them, or waiting on
     // sound banks.
-    {"_ZN21AreaTransitionManager6UpdateEv", "area"},
-    {"_ZN21AreaTransitionManager32UpdateAreaTransitionStateMachineEv", "area sm"},
+    {"_ZN21AreaTransitionManager6UpdateEv", "area", 1},
+    {"_ZN21AreaTransitionManager32UpdateAreaTransitionStateMachineEv", "area sm", 1},
     {"_ZN21AreaTransitionManager40UpdateBlockingAreaTransitionStateMachineEv", "area block"},
-    {"_ZN21AreaTransitionManager8LoadAreaERK7CVector", "area load"},
-    {"_ZN21AreaTransitionManager14ClearAreaPropsERK15VisibleAreaEnum", "area props"},
-    {"_ZN21AreaTransitionManager21HandlePropActionTreesEv", "area trees"},
-    {"_ZN5CGame12TidyUpMemoryEbb", "tidy mem"},
-    {"_ZN13ScriptManager15StopAreaScriptsEv", "script stop"},
-    {"_ZN11CPedManager12ShutDownPedsEv", "peds shut"},
-    {"_ZN11CPopulation32UpdatePopulationOnAreaTransitionEv", "pop area"},
-    {"_ZN18cSCREAMBankManager14AreaTransitionEv", "sound area"},
+    {"_ZN21AreaTransitionManager8LoadAreaERK7CVector", "area load", 1},
+    {"_ZN21AreaTransitionManager14ClearAreaPropsERK15VisibleAreaEnum", "area props", 1},
+    {"_ZN21AreaTransitionManager21HandlePropActionTreesEv", "area trees", 1},
+    {"_ZN5CGame12TidyUpMemoryEbb", "tidy mem", 1},
+    {"_ZN13ScriptManager15StopAreaScriptsEv", "script stop", 1},
+    {"_ZN11CPedManager12ShutDownPedsEv", "peds shut", 1},
+    {"_ZN11CPopulation32UpdatePopulationOnAreaTransitionEv", "pop area", 1},
+    {"_ZN18cSCREAMBankManager14AreaTransitionEv", "sound area", 1},
 
-    {"_ZN10CStreaming9LoadSceneERK7CVector", "load scene"},
-    {"_ZN10CStreaming22LoadAllRequestedModelsEb", "load all"},
-    {"_ZN10CStreaming15GetNextFileOnCdEib", "next file"},
-    {"_ZN10CStreaming21ConvertBufferToObjectEPcib", "convert"},
-    {"_ZN10CStreaming12RequestModelEii", "req model"},
-    {"_ZN10CStreaming11RemoveModelEi", "rm model"},
-    {"_ZN10CStreaming22AddModelsToRequestListERK7CVectorj", "add reqs"},
-    {"_ZN10CStreaming20InstanceLoadedModelsERK7CVector", "instance"},
-    {"_ZN10CStreaming24PostInstanceLoadedModelsERK7CVector", "post inst"},
-    {"_ZN10CStreaming13FlushChannelsEv", "flush ch"},
-    {"_ZN9CColStore13LoadCollisionERK9CVector2D", "col load"},
-    {"_ZN9CColStore7LoadColEiPhi", "col file"},
-    {"_ZN9CColStore25EnsureCollisionIsInMemoryERK9CVector2D", "col ensure"},
-    {"_ZN9CColStore25SpecialHasCollisionLoadedERK9CVector2D", "col check"},
-    {"_Z13LoadingScreenPKcS0_", "loadscreen"},
+    {"_ZN10CStreaming9LoadSceneERK7CVector", "load scene", 1},
+    {"_ZN10CStreaming22LoadAllRequestedModelsEb", "load all", 1},
+    {"_ZN10CStreaming15GetNextFileOnCdEib", "next file", 1},
+    {"_ZN10CStreaming21ConvertBufferToObjectEPcib", "convert", 1},
+    {"_ZN10CStreaming22AddModelsToRequestListERK7CVectorj", "add reqs", 1},
+    {"_ZN10CStreaming20InstanceLoadedModelsERK7CVector", "instance", 1},
+    {"_ZN10CStreaming24PostInstanceLoadedModelsERK7CVector", "post inst", 1},
+    {"_ZN10CStreaming13FlushChannelsEv", "flush ch", 1},
+    {"_ZN9CColStore13LoadCollisionERK9CVector2D", "col load", 1},
+    {"_ZN9CColStore7LoadColEiPhi", "col file", 1},
+    {"_ZN9CColStore25EnsureCollisionIsInMemoryERK9CVector2D", "col ensure", 1},
+
+    // One level inside ConvertBufferToObject, which was 96.7% of a 13510 ms area
+    // load on its own. It both reads and computes -- it opens a stream, loads a
+    // texture dictionary, loads collision, converts a mesh -- so splitting it is
+    // what says whether the freeze is the card or the CPU, and the io figures
+    // above say the same thing a second way.
+    {"_ZN10CStreaming18ConvertMeshToModelEP4MeshiP14CStreamingInfoP14CBaseModelInfo", "convert mesh", 1},
+    {"_Z17MadNoRwStreamOpen12RwStreamType18RwStreamAccessTypePv", "stream open", 1},
+    {"_ZN9CTxdStore7LoadTxdEiP13MadNoRwStream", "load txd", 1},
+    {"_ZN11LipSyncData11LoadInitialEiPc", "lipsync", 1},
+    {"_ZN10CModelInfo19SetupPropActionTreeEi", "prop tree", 1},
+    {"_ZN10ActionNode14LoadFromMemoryEiPKhPS_", "action node", 1},
 };
 
 
@@ -145,7 +158,8 @@ typedef struct {
   uint32_t worst_us;
   uint32_t entered_us;
   int depth;
-  uint32_t last_calls, last_total_us; // what the previous heartbeat had seen
+  uint32_t io_us, io_reads; // of the above, spent inside the game's fread
+  uint32_t last_calls, last_total_us, last_io_us, last_io_reads;
   uint8_t live;
 } ProfileSlot;
 
@@ -279,6 +293,33 @@ static uint32_t profile_now_us(void) {
 unsigned io_opens, io_seeks, io_reads, io_bytes_kb, io_us;
 static unsigned io_bytes_part;
 
+// Which hooked functions the reading thread is currently inside.
+//
+// The process wide totals cannot answer the question that matters. The last run
+// had ConvertBufferToObject at 13059 ms of a 13510 ms area load and the io line
+// at 14646 ms of reading in the same twenty seconds -- more than the load itself,
+// because the game's CDStreamThread reads continuously in the background and
+// the counter could not tell the two apart. So a read is charged to whichever
+// watched functions are on the stack of the thread that made it, and to none if
+// that is a different thread.
+#define IO_STACK 8
+static SceUID io_thread;
+static int io_stack[IO_STACK];
+static int io_depth;
+
+static void io_enter(int slot) {
+  if (!io_depth)
+    io_thread = sceKernelGetThreadId();
+  if (io_depth < IO_STACK)
+    io_stack[io_depth] = slot;
+  io_depth++;
+}
+
+static void io_leave(int slot) {
+  if (io_depth > 0 && (io_depth > IO_STACK || io_stack[io_depth - 1] == slot))
+    io_depth--;
+}
+
 void frame_profile_io_open(void) {
   if (profiling)
     io_opens++;
@@ -296,8 +337,16 @@ unsigned frame_profile_io_begin(void) {
 void frame_profile_io_end(unsigned started, unsigned bytes) {
   if (!profiling)
     return;
-  io_us += profile_now_us() - started;
+  unsigned spent = profile_now_us() - started;
+  io_us += spent;
   io_reads++;
+  if (io_depth && sceKernelGetThreadId() == io_thread) {
+    int n = io_depth < IO_STACK ? io_depth : IO_STACK;
+    for (int i = 0; i < n; i++) {
+      slots[io_stack[i]].io_us += spent;
+      slots[io_stack[i]].io_reads++;
+    }
+  }
   io_bytes_part += bytes;
   io_bytes_kb += io_bytes_part >> 10;
   io_bytes_part &= 1023;
@@ -311,11 +360,15 @@ void *frame_profile_enter(int slot) {
   // well would make the column add up to several times the frame.
   if (__atomic_fetch_add(&s->depth, 1, __ATOMIC_SEQ_CST) == 0)
     s->entered_us = profile_now_us();
+  if (targets[slot].watch_io)
+    io_enter(slot);
   return (void *)s->trampoline;
 }
 
 void frame_profile_exit(int slot) {
   ProfileSlot *s = &slots[slot];
+  if (targets[slot].watch_io)
+    io_leave(slot);
   if (__atomic_sub_fetch(&s->depth, 1, __ATOMIC_SEQ_CST) != 0)
     return;
   uint32_t spent = profile_now_us() - s->entered_us;
@@ -467,8 +520,16 @@ void frame_profile_report(void) {
       break;
     placed[best] = 1;
     int room = (int)sizeof(line) - at;
-    int put = snprintf(line + at, room, "%s%s %u ms/%u (worst %u ms)", at ? " | " : "",
-                       targets[best].shown, ms[best], calls[best], slots[best].worst_us / 1000);
+    unsigned iod = (slots[best].io_us - slots[best].last_io_us) / 1000;
+    int put;
+    if (targets[best].watch_io)
+      put = snprintf(line + at, room, "%s%s %u ms/%u (io %u ms/%u, worst %u ms)", at ? " | " : "",
+                     targets[best].shown, ms[best], calls[best], iod,
+                     slots[best].io_reads - slots[best].last_io_reads,
+                     slots[best].worst_us / 1000);
+    else
+      put = snprintf(line + at, room, "%s%s %u ms/%u (worst %u ms)", at ? " | " : "",
+                     targets[best].shown, ms[best], calls[best], slots[best].worst_us / 1000);
     if (put < 0)
       break;
     if (put >= room) { // did not fit: flush what we have and put it on the next line
@@ -517,5 +578,7 @@ void frame_profile_report(void) {
   for (int i = 0; i < PROFILE_SLOTS; i++) {
     slots[i].last_total_us = slots[i].total_us;
     slots[i].last_calls = slots[i].calls;
+    slots[i].last_io_us = slots[i].io_us;
+    slots[i].last_io_reads = slots[i].io_reads;
   }
 }
