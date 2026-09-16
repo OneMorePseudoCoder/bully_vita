@@ -102,15 +102,28 @@ static const ProfileTarget targets[] = {
     //
     // Two of those already own a thread somewhere else and are running here
     // anyway: SoundSystem::Tick with the Sound thread on core 3 at 8%, and
-    // RendererES::Update with RenderThread on core 0. If either is worth
-    // milliseconds then it moves for the cost of a thread hand-off, which is a
-    // great deal cheaper than splitting the ped loop.
+    // RendererES::Update with RenderThread on core 0.
+    //
+    // Measured, both are now answered. RendererES::Update is 0.005 ms a frame
+    // -- it is a flag update, not the renderer, and there is nothing there to
+    // move. SoundSystem::Tick is 0.34 to 0.41 ms in play, which is also not
+    // worth a thread; but across a heartbeat carrying an area load it is 1.78
+    // to 3.15 ms a frame, and single calls reached 178 and 208 ms. So it is not
+    // a frame rate cost, it is a stall that happens while the card is busy, and
+    // it belongs with the area load rather than with core 1.
+    //
+    // UISystem::Update is 0.38 to 0.54 ms and steady.
     //
     // All five take (this, float) -- two argument words -- so the stack
     // argument rule that broke CdStreamRead does not reach them.
     {"_ZN8UISystem6UpdateEf", "ui update"},
-    {"_ZN11Application7appTickEf", "app inner"},
-    {"_ZN11Application9appRenderEf", "app render"},
+    // Application, not BullyApplication, was the wrong class for these two:
+    // both slots come off *this*, and the live object is the derived one, which
+    // overrides them. The base versions hooked cleanly and then sat in the never
+    // called list through every heartbeat of a session. Read the override out of
+    // vtable for BullyApplication instead.
+    {"_ZN16BullyApplication7appTickEf", "app inner"},
+    {"_ZN16BullyApplication9appRenderEf", "app render"},
     {"_ZN11SoundSystem4TickEf", "sound tick"},
     {"_ZN10RendererES6UpdateEf", "rend update"},
 
