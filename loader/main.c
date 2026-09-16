@@ -703,8 +703,14 @@ static FILE *stdin_fake;
 // took thirteen seconds is only half an answer without knowing how much of it
 // was spent waiting on the card.
 static FILE *counted_fopen(const char *filename, const char *mode) {
-  frame_profile_io_open();
-  return sceLibcBridge_fopen(filename, mode);
+  // Timed, not just counted. An open and a read are different costs on this
+  // card -- an earlier round measured a first open at 3.49 ms against 1.18 ms
+  // of latency for a read -- and the area load does roughly one open per read,
+  // so lumping them together would hide most of whichever one is the problem.
+  unsigned t0 = frame_profile_io_begin();
+  FILE *f = sceLibcBridge_fopen(filename, mode);
+  frame_profile_io_open(t0);
+  return f;
 }
 
 static int counted_fseek(FILE *stream, long int offset, int origin) {

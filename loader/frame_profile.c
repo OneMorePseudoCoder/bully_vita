@@ -180,8 +180,11 @@ typedef struct {
   uint32_t worst_us;
   uint32_t entered_us;
   int depth;
-  uint32_t io_us, io_reads; // of the above, spent inside the game's fread
+  uint32_t io_us, io_reads;   // of the above, spent inside the game's fread
+  uint32_t open_us, opens;    // and inside its fopen, which is not the same cost
+  uint32_t io_kb;
   uint32_t last_calls, last_total_us, last_io_us, last_io_reads;
+  uint32_t last_open_us, last_opens, last_io_kb;
   uint8_t live;
 } ProfileSlot;
 
@@ -335,7 +338,7 @@ static uint32_t profile_now_us(void) {
  * On only when the profiler is, and a branch when it is not. The game's fread
  * is not a hot path in the ordinary sense: a whole session made 65000 of them.
  */
-unsigned io_opens, io_seeks, io_reads, io_bytes_kb, io_us;
+unsigned io_opens, io_seeks, io_reads, io_bytes_kb, io_us, open_us;
 static unsigned io_bytes_part;
 
 // Which hooked functions the reading thread is currently inside.
@@ -365,9 +368,32 @@ static void io_leave(int slot) {
     io_depth--;
 }
 
-void frame_profile_io_open(void) {
-  if (profiling)
-    io_opens++;
+// Charge one file operation to every watched function the calling thread is
+// inside. kind 0 is a read, 1 is an open.
+static void io_charge(unsigned spent, unsigned bytes, int kind) {
+  if (!io_depth || sceKernelGetThreadId() != io_thread)
+    return;
+  int n = io_depth < IO_STACK ? io_depth : IO_STACK;
+  for (int i = 0; i < n; i++) {
+    ProfileSlot *s = &slots[io_stack[i]];
+    if (kind) {
+      s->open_us += spent;
+      s->opens++;
+    } else {
+      s->io_us += spent;
+      s->io_reads++;
+      s->io_kb += bytes >> 10;
+    }
+  }
+}
+
+void frame_profile_io_open(unsigned started) {
+  if (!profiling)
+    return;
+  unsigned spent = profile_now_us() - started;
+  open_us += spent;
+  io_opens++;
+  io_charge(spent, 0, 1);
 }
 
 void frame_profile_io_seek(void) {
@@ -385,13 +411,7 @@ void frame_profile_io_end(unsigned started, unsigned bytes) {
   unsigned spent = profile_now_us() - started;
   io_us += spent;
   io_reads++;
-  if (io_depth && sceKernelGetThreadId() == io_thread) {
-    int n = io_depth < IO_STACK ? io_depth : IO_STACK;
-    for (int i = 0; i < n; i++) {
-      slots[io_stack[i]].io_us += spent;
-      slots[io_stack[i]].io_reads++;
-    }
-  }
+  io_charge(spent, bytes, 0);
   io_bytes_part += bytes;
   io_bytes_kb += io_bytes_part >> 10;
   io_bytes_part &= 1023;
@@ -568,10 +588,13 @@ void frame_profile_report(void) {
     unsigned iod = (slots[best].io_us - slots[best].last_io_us) / 1000;
     int put;
     if (targets[best].watch_io)
-      put = snprintf(line + at, room, "%s%s %u ms/%u (io %u ms/%u, worst %u ms)", at ? " | " : "",
-                     targets[best].shown, ms[best], calls[best], iod,
+      put = snprintf(line + at, room,
+                     "%s%s %u ms/%u (rd %u ms/%u %u KB, op %u ms/%u, worst %u ms)",
+                     at ? " | " : "", targets[best].shown, ms[best], calls[best], iod,
                      slots[best].io_reads - slots[best].last_io_reads,
-                     slots[best].worst_us / 1000);
+                     slots[best].io_kb - slots[best].last_io_kb,
+                     (slots[best].open_us - slots[best].last_open_us) / 1000,
+                     slots[best].opens - slots[best].last_opens, slots[best].worst_us / 1000);
     else
       put = snprintf(line + at, room, "%s%s %u ms/%u (worst %u ms)", at ? " | " : "",
                      targets[best].shown, ms[best], calls[best], slots[best].worst_us / 1000);
@@ -611,9 +634,11 @@ void frame_profile_report(void) {
            at ? line : "none", hooked_calls);
   // The game's own reading, over the same interval, so a slow function can be
   // told from a slow card.
-  traceLog("frame io: %u reads %u KB in %u ms | %u opens %u seeks\n", io_reads - last_reads,
-           io_bytes_kb - last_kb, (io_us - last_io_us) / 1000, io_opens - last_opens,
-           io_seeks - last_seeks);
+  static unsigned last_open_us;
+  traceLog("frame io: %u reads %u KB in %u ms | %u opens in %u ms | %u seeks\n",
+           io_reads - last_reads, io_bytes_kb - last_kb, (io_us - last_io_us) / 1000,
+           io_opens - last_opens, (open_us - last_open_us) / 1000, io_seeks - last_seeks);
+  last_open_us = open_us;
   last_opens = io_opens;
   last_seeks = io_seeks;
   last_reads = io_reads;
@@ -625,5 +650,8 @@ void frame_profile_report(void) {
     slots[i].last_calls = slots[i].calls;
     slots[i].last_io_us = slots[i].io_us;
     slots[i].last_io_reads = slots[i].io_reads;
+    slots[i].last_open_us = slots[i].open_us;
+    slots[i].last_opens = slots[i].opens;
+    slots[i].last_io_kb = slots[i].io_kb;
   }
 }
