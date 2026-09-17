@@ -22,11 +22,12 @@
  * no path by which this creates a ped, takes a lock, or touches anything the
  * other cores can see. The worst it can do is empty the school.
  *
- * Which is the trade, and it is the honest one for this hardware: the cap is
- * the difference between a street that stutters and a street that does not.
- * It is tunable without a rebuild precisely because the right number is a
- * matter of taste rather than of measurement -- put a number in
- * ux0:data/Bully/ped_cap, or an empty no_pedcap file to leave the game alone.
+ * It is off unless ux0:data/Bully/ped_cap exists with a number in it, and it
+ * should stay off. Bully is a game about a school full of people; a version of
+ * it with an empty school has given up the thing it was porting. This is here
+ * to price the ped loop -- to answer "what would moving this to another core
+ * actually be worth" in one run, without writing the hard version first -- and
+ * not as an answer in itself. The answer is to move the work, not delete it.
  *
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
@@ -119,11 +120,12 @@ static int read_configured_cap(void) {
 }
 
 void ped_cap_init(void) {
+  // Opt in, not opt out. A cap trades the school being full for frame rate,
+  // and a port that quietly empties the school has broken the thing it was
+  // meant to run. It is here to answer "what would it be worth", not to ship.
   SceIoStat stat;
-  if (sceIoGetstat(PED_CAP_DISABLE_PATH, &stat) >= 0) {
-    traceLog("ped cap: off, the game keeps its own ambient limit\n");
+  if (sceIoGetstat(PED_CAP_PATH, &stat) < 0)
     return;
-  }
 
   uintptr_t entry = so_symbol(&bully_mod, "_ZN11CPopulation24RoomForAnotherAmbientPedEv");
   uintptr_t total = so_symbol(&bully_mod, "_ZN11CPopulation15GetPedTypeTotalEv");

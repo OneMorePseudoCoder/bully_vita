@@ -192,9 +192,9 @@
 
 // A ceiling on the ambient ped count, on top of the one the area already has.
 // About 0.9 ms of core 1 per ped, so this is the frame rate knob with the
-// largest travel -- and the one whose cost is visible rather than measurable.
-// A number on the first line of ped_cap replaces the default; an empty
-// no_pedcap file leaves the game's own limit alone.
+// largest travel -- and the only one here whose cost is paid in content rather
+// than in risk, which is why it is off unless the ped_cap file exists. It is a
+// measuring instrument: it prices the ped loop without having to move it first.
 #define PED_CAP_DEFAULT 10
 #define PED_CAP_PATH DATA_PATH "/" "ped_cap"
 #define PED_CAP_DISABLE_PATH DATA_PATH "/" "no_pedcap"
