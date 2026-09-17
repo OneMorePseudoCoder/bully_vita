@@ -53,6 +53,7 @@
 
 #include "streaming_patch.h"
 #include "fps_cap.h"
+#include "ped_cap.h"
 #include "frame_profile.h"
 #include "texture_cache.h"
 #include "vertex_cache.h"
@@ -320,6 +321,7 @@ static void memory_heartbeat(void) {
   (void)last_loader;
 
   frame_profile_report();
+  ped_cap_report();
   thread_report(span_us);
 }
 
@@ -616,6 +618,7 @@ void patch_game(void) {
 
   // Before the profiler: they would otherwise both want ClampFPS.
   fps_cap_init();
+  ped_cap_init();
 
   // Last, and only when asked for. It relocates the prologues it displaces, and
   // a literal load is relocated by value -- which is only the right value once

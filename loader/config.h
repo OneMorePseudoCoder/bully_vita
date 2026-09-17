@@ -190,6 +190,15 @@
 // without one and anything frame rate dependent in it will move faster.
 #define FPS_CAP_DISABLE_PATH DATA_PATH "/" "no_fps_cap"
 
+// A ceiling on the ambient ped count, on top of the one the area already has.
+// About 0.9 ms of core 1 per ped, so this is the frame rate knob with the
+// largest travel -- and the one whose cost is visible rather than measurable.
+// A number on the first line of ped_cap replaces the default; an empty
+// no_pedcap file leaves the game's own limit alone.
+#define PED_CAP_DEFAULT 10
+#define PED_CAP_PATH DATA_PATH "/" "ped_cap"
+#define PED_CAP_DISABLE_PATH DATA_PATH "/" "no_pedcap"
+
 // How long a vertex buffer must go unlocked before the loader takes back the
 // CPU-side copy of its data. The game keeps that copy for the life of the
 // buffer so it can be locked again without reading back from the GPU, which is
