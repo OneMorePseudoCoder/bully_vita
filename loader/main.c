@@ -54,6 +54,7 @@
 #include "streaming_patch.h"
 #include "fps_cap.h"
 #include "ped_cap.h"
+#include "io_census.h"
 #include "frame_profile.h"
 #include "texture_cache.h"
 #include "vertex_cache.h"
@@ -322,6 +323,7 @@ static void memory_heartbeat(void) {
 
   frame_profile_report();
   ped_cap_report();
+  io_census_report();
   thread_report(span_us);
 }
 
@@ -717,6 +719,12 @@ static FILE *counted_fopen(const char *filename, const char *mode) {
   unsigned t0 = frame_profile_io_begin();
   FILE *f = sceLibcBridge_fopen(filename, mode);
   frame_profile_io_open(t0);
+  // And again against the path, because the totals cannot tell a thousand opens
+  // of one archive from a thousand opens of a thousand files, and those want
+  // opposite fixes.
+  SceKernelSysClock now;
+  sceKernelGetProcessTime(&now);
+  io_census_open(filename, (unsigned)now - t0);
   return f;
 }
 
@@ -729,6 +737,9 @@ static size_t counted_fread(void *ptr, size_t size, size_t count, FILE *stream) 
   unsigned t0 = frame_profile_io_begin();
   size_t got = sceLibcBridge_fread(ptr, size, count, stream);
   frame_profile_io_end(t0, (unsigned)(got * size));
+  SceKernelSysClock now;
+  sceKernelGetProcessTime(&now);
+  io_census_read((unsigned)now - t0, (unsigned)(got * size));
   return got;
 }
 
@@ -1096,6 +1107,7 @@ int main(int argc, char *argv[]) {
            BACKUP_FORMAT);
 
   track_thread(sceKernelGetThreadId(), "frame");
+  io_census_init();
   core_layout_fixed = !file_exists(CORE_LAYOUT_DISABLE_PATH);
   traceLog("threads: %s -- frame core 2, game core %d, render core %d, "
            "streaming core %d, display queue core 0 (fixed)\n",
