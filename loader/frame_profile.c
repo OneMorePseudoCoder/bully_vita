@@ -161,6 +161,45 @@ static const ProfileTarget targets[] = {
     {"_ZN7CObject9UpdateAllEv", "obj update"},
     {"_ZN6CTimer6UpdateEb", "ctimer"},
 
+    // Inside one ped's update. CPed::ProcessControl costs about 0.9 ms of core
+    // 1 per ped and 16 peds is the difference between 29 fps and 21, so this is
+    // the only cost left that is worth anything -- and the ped loop itself
+    // cannot be moved to another core: the allocator tag stack, the pool
+    // allocator, the world scan code and the loop's own cursor are all single
+    // global variables with no locks on them.
+    //
+    // What can be done instead is make a ped cheaper, and the shape of the
+    // callee list says how. The acting -- CPhysical::ProcessControl, moving and
+    // colliding -- is 380 bytes. Everything above it is the ped looking around:
+    // rebuilding the list of peds near it, re-finding doors, re-finding
+    // obstacles, re-scoring targets. Recomputed from scratch, per ped, 28 times
+    // a second.
+    //
+    // Two things these settle. Which of those scans actually costs the
+    // milliseconds, so throttling is aimed rather than sprayed. And whether the
+    // two call sites each for RefreshCloseDoors and RefreshCloseObstacles both
+    // run every frame -- the call counts say so directly, and if they do, the
+    // second of each is recomputing what the first just produced, which is free
+    // to remove and changes nothing that can be observed.
+    //
+    // PedSense::Update and CPed::UpdateSprint are missing because their
+    // prologues will not relocate. They are the only two of the list refused.
+    {"_ZN15TargetingSystem6UpdateEb", "targeting"},
+    {"_ZN4CPed13BuildPedListsEb", "ped lists"},
+    {"_ZN12NPathFinding17CAvoidanceManager17RefreshCloseDoorsEv", "close doors"},
+    {"_ZN12NPathFinding17CAvoidanceManager21RefreshCloseObstaclesEv", "close obst"},
+    {"_ZN10CPedSocial20TestForExitConditionEv", "social exit"},
+    {"_ZN4CPed16UpdateSoundBanksEv", "ped sound"},
+    {"_ZN7PedAlly6UpdateEv", "ped ally"},
+    {"_ZN14TriggerManager14GenerateEventsEP4CPed", "triggers"},
+    {"_ZN9CPhysical14ProcessControlEv", "ped phys"},
+    {"_ZN9PedCombat6UpdateEv", "ped combat"},
+    {"_ZN4CPed25UpdateAnimGroupReferencesEv", "ped animref"},
+    {"_ZN4CPed16checkPedInliquidEv", "ped liquid"},
+    {"_ZN9CPhysical12RemoveAndAddEv", "ped readd"},
+    {"_ZN4CPed12UpdateTargetEv", "ped target"},
+    {"_ZN4CPed20UpdateOverheadMarkerEv", "ped marker"},
+
     {"_ZN5CGame7ProcessEv", "CGame"},
     {"_ZN6CWorld7ProcessEv", "CWorld"},
     {"_ZN14WorldSceneView6RenderEv", "scene draw"},
@@ -263,7 +302,7 @@ static const ProfileTarget targets[] = {
 #define PROFILE_SLOTS ((int)(sizeof(targets) / sizeof(targets[0])))
 // One thunk per slot, and the thunks are written out by hand because each has to
 // know which slot it stands for. Adding a target past this needs another one.
-#define PROFILE_THUNKS 88
+#define PROFILE_THUNKS 96
 _Static_assert(PROFILE_SLOTS <= PROFILE_THUNKS, "more targets than thunks to reach them with");
 #define TRAMPOLINE_BYTES 64
 
@@ -334,7 +373,9 @@ __asm__(".syntax unified\n"
         "FPTHUNK 72\n FPTHUNK 73\n FPTHUNK 74\n FPTHUNK 75\n"
         "FPTHUNK 76\n FPTHUNK 77\n FPTHUNK 78\n FPTHUNK 79\n"
         "FPTHUNK 80\n FPTHUNK 81\n FPTHUNK 82\n FPTHUNK 83\n"
-        "FPTHUNK 84\n FPTHUNK 85\n FPTHUNK 86\n FPTHUNK 87\n");
+        "FPTHUNK 84\n FPTHUNK 85\n FPTHUNK 86\n FPTHUNK 87\n"
+        "FPTHUNK 88\n FPTHUNK 89\n FPTHUNK 90\n FPTHUNK 91\n"
+        "FPTHUNK 92\n FPTHUNK 93\n FPTHUNK 94\n FPTHUNK 95\n");
 
 extern void frame_profile_thunk_0(void);
 extern void frame_profile_thunk_1(void);
@@ -424,6 +465,14 @@ extern void frame_profile_thunk_84(void);
 extern void frame_profile_thunk_85(void);
 extern void frame_profile_thunk_86(void);
 extern void frame_profile_thunk_87(void);
+extern void frame_profile_thunk_88(void);
+extern void frame_profile_thunk_89(void);
+extern void frame_profile_thunk_90(void);
+extern void frame_profile_thunk_91(void);
+extern void frame_profile_thunk_92(void);
+extern void frame_profile_thunk_93(void);
+extern void frame_profile_thunk_94(void);
+extern void frame_profile_thunk_95(void);
 
 static void (*const thunks[])(void) = {
     frame_profile_thunk_0, frame_profile_thunk_1, frame_profile_thunk_2, frame_profile_thunk_3,
@@ -448,6 +497,8 @@ static void (*const thunks[])(void) = {
     frame_profile_thunk_76, frame_profile_thunk_77, frame_profile_thunk_78, frame_profile_thunk_79,
     frame_profile_thunk_80, frame_profile_thunk_81, frame_profile_thunk_82, frame_profile_thunk_83,
     frame_profile_thunk_84, frame_profile_thunk_85, frame_profile_thunk_86, frame_profile_thunk_87,
+    frame_profile_thunk_88, frame_profile_thunk_89, frame_profile_thunk_90, frame_profile_thunk_91,
+    frame_profile_thunk_92, frame_profile_thunk_93, frame_profile_thunk_94, frame_profile_thunk_95,
 };
 
 static uint32_t profile_now_us(void) {
