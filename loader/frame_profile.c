@@ -633,6 +633,11 @@ void frame_profile_exit(int slot) {
 
 void frame_profile_init(void) {
   SceIoStat stat;
+  // Ninety-odd hooks and a relocated prologue each are a lot to install for a
+  // report nobody will see. The profile file asks for the measurement; the log
+  // file is what makes the measurement readable, and it needs both.
+  if (!log_is_enabled())
+    return;
   if (sceIoGetstat(FRAME_PROFILE_PATH, &stat) < 0)
     return;
 

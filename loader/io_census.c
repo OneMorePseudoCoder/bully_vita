@@ -50,6 +50,7 @@
 typedef struct {
   char tail[CENSUS_TAIL];
   uint32_t opens;
+  uint32_t fails; // opens that returned NULL -- a path the game tries first and does not have
   uint32_t open_us;
   uint32_t reads;
   uint32_t read_us;
@@ -70,6 +71,12 @@ static int census_ready;
 static struct { SceUID thid; int slot; } last_open[CENSUS_THREADS];
 
 void io_census_init(void) {
+  // Leaving census_ready at zero is what makes every io_census_* call below a
+  // single compare and return. A lock and a table update on every one of half
+  // a million reads, for a report the log will never carry, is not worth even
+  // a microsecond each.
+  if (!log_is_enabled())
+    return;
   if (sceKernelCreateLwMutex(&census_lock, "bully io census", 0x2000, 0, NULL) >= 0)
     census_ready = 1;
 }
@@ -129,7 +136,7 @@ static int recall_open(void) {
   return -1;
 }
 
-void io_census_open(const char *path, unsigned us) {
+void io_census_open(const char *path, unsigned us, int failed) {
   if (!census_ready)
     return;
   char tail[CENSUS_TAIL];
@@ -141,6 +148,7 @@ void io_census_open(const char *path, unsigned us) {
     census_overflow++;
   } else {
     census[slot].opens++;
+    census[slot].fails += failed ? 1 : 0;
     census[slot].open_us += us;
     remember_open(slot);
   }
@@ -200,8 +208,9 @@ void io_census_report(void) {
     }
     if (best < 0)
       break;
-    traceLog("io census:   %5u opens %5u ms | %4u reads %5u ms %6u KB | %s\n",
-             (unsigned)copy[best].opens, (unsigned)(copy[best].open_us / 1000),
+    traceLog("io census:   %5u opens (%4u failed) %5u ms | %4u reads %5u ms %6u KB | %s\n",
+             (unsigned)copy[best].opens, (unsigned)copy[best].fails,
+             (unsigned)(copy[best].open_us / 1000),
              (unsigned)copy[best].reads, (unsigned)(copy[best].read_us / 1000),
              (unsigned)copy[best].read_kb, copy[best].tail);
     copy[best].opens = 0;

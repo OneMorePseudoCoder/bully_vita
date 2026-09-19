@@ -11,7 +11,7 @@
 void io_census_init(void);
 
 // Records one fopen against the path it was for, with what it cost.
-void io_census_open(const char *path, unsigned us);
+void io_census_open(const char *path, unsigned us, int failed);
 // Records a read's bytes and cost against whatever was opened most recently on
 // this thread, which is the file it is almost certainly reading from.
 void io_census_read(unsigned us, unsigned bytes);

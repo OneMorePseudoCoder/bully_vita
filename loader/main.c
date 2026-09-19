@@ -199,12 +199,19 @@ int ret0(void) {
 // install must not create the log file at all.
 static int log_enabled;
 
-int traceLog(char *text, ...) {
+// Anything whose only output is the log asks this before doing the work that
+// produces it: the heartbeat's pool walks, the census's lock per read, the
+// profiler's ninety hooks. With the log off they are cost with no reader.
+int log_is_enabled(void) {
   if (!log_enabled) {
     SceIoStat stat;
     log_enabled = sceIoGetstat(LOG_ENABLE_PATH, &stat) >= 0 ? 1 : -1;
   }
-  if (log_enabled < 0)
+  return log_enabled > 0;
+}
+
+int traceLog(char *text, ...) {
+  if (!log_is_enabled())
     return 0;
   va_list list;
   char string[512];
@@ -244,6 +251,11 @@ int frames_swapped;
 // thrashing. Everything here is a counter already kept; nothing is sampled for
 // the sake of this, and mallinfo is read once by the texture tick either way.
 static void memory_heartbeat(void) {
+  // Everything below is bookkeeping for a report. With the log off there is
+  // no report, so the three vglMemFree walks, the five sceKernelGetThreadInfo
+  // calls and the census sort would run every twenty seconds for nothing.
+  if (!log_is_enabled())
+    return;
   SceKernelSysClock now;
   sceKernelGetProcessTime(&now);
   static SceKernelSysClock last;
@@ -729,7 +741,7 @@ static FILE *counted_fopen(const char *filename, const char *mode) {
   // And again against the path, because the totals cannot tell a thousand opens
   // of one archive from a thousand opens of a thousand files, and those want
   // opposite fixes. Same figure the profiler just took; no third clock read.
-  io_census_open(filename, frame_profile_io_open(t0));
+  io_census_open(filename, frame_profile_io_open(t0), f == NULL);
   return f;
 }
 
