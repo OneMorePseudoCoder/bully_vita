@@ -576,6 +576,9 @@ static StoreEntry store_index[STORE_SLOTS];
 static uint32_t store_files;
 static uint64_t store_bytes;
 static uint32_t store_reused; // evictions that found the bytes already there
+// ...of which these also took a heap copy on the way past, so the restore is a
+// memcpy rather than an open, a read and a checksum.
+static uint32_t store_ram_backed;
 
 
 static uint32_t store_slot(uint64_t key) {
@@ -999,6 +1002,7 @@ void texture_cache_init(void) {
   store_files = 0;
   store_bytes = 0;
   store_reused = 0;
+  store_ram_backed = 0;
   scan_store();
 
   // The scratch buffer is allocated when a texture is first read back from the
@@ -1157,6 +1161,12 @@ static int backup_capture(TextureInfo *info, GLuint id) {
   // exists to keep a write out of a frame, and there is no write here; leaving
   // this until after it, which is where it started, meant a free eviction was
   // refused for the cost of one it was not going to pay.
+  // Declared out here because the store shortcut below now uses them after the
+  // verification step, which is a different scope. store_verify only touches
+  // files -- it never issues GL -- so the pointer stays good across it.
+  const void *held = NULL;
+  uint32_t usable = 0;
+
   StoreEntry *already = store_find(info->key, info->resident_size);
   if (already) {
     // Look at the buffer before saying yes, even though there is nothing to
@@ -1180,8 +1190,8 @@ static int backup_capture(TextureInfo *info, GLuint id) {
     // It cannot fix whatever made the pointer stale. It stops this cache being
     // the thing that steps on it.
     glBindTexture(GL_TEXTURE_2D, id);
-    const void *held = vglGetTexDataPointer(GL_TEXTURE_2D);
-    uint32_t usable = held ? (uint32_t)vglMallocUsableSize((void *)held) : 0;
+    held = vglGetTexDataPointer(GL_TEXTURE_2D);
+    usable = held ? (uint32_t)vglMallocUsableSize((void *)held) : 0;
     if (!usable || usable > (uint32_t)TEXTURE_BACKUP_MAX_KB * 1024) {
       traceLog("texture cache: not dropping %u, key %08x%08x -- vitaGL calls its "
                "%u byte texture %u bytes\n",
@@ -1219,6 +1229,44 @@ static int backup_capture(TextureInfo *info, GLuint id) {
     }
   }
   if (already) {
+    // Free to evict is not the same as cheap to restore.
+    //
+    // A thirteen hour session restored 3558 textures and 3253 of them came off
+    // the memory card -- ninety-one per cent down the slow path -- because this
+    // shortcut returns before anything is copied. The bytes are on the card, so
+    // the eviction costs nothing and nothing can be lost; but then every one of
+    // those textures is an open and a read and a checksum when the game asks
+    // for it back, and the game asks a lot. Of 4869 evictions, 3558 were
+    // followed by a restore.
+    //
+    // So take the heap copy too, when there is room for one, under the same two
+    // guards the ordinary path uses. The card file stays exactly where it is --
+    // this adds a faster way back, it does not replace the safe one, and if the
+    // copy cannot be made the shortcut behaves as it always did.
+    //
+    // The pixels are read live rather than from the file, which is the same
+    // thing by construction: the store was found by key, and the key is folded
+    // from the bytes.
+    if (!info->ram_copy && held && usable &&
+        ram_cache_bytes + usable <= (size_t)TEXTURE_RAM_CACHE_MB * 1024 * 1024 &&
+        !heap_is_tight()) {
+      uint8_t *copy = malloc(usable);
+      if (copy) {
+        memcpy(copy, held, usable);
+        info->ram_copy = copy;
+        // Must be the size of the allocation rather than the estimate:
+        // backup_release and the restore both give this many bytes back to
+        // ram_cache_bytes, and the restore memcpys exactly this many.
+        info->backup_bytes = usable;
+        ram_cache_bytes += usable;
+        ram_evicted_count++;
+        store_ram_backed++;
+        store_reused++;
+        return 1;
+      }
+      // malloc refusing is the heap saying no, whatever the ceiling says. The
+      // card copy is still there, so there is nothing to recover from.
+    }
     info->backup_bytes = info->resident_size;
     store_reused++;
     return 1;
@@ -2213,6 +2261,7 @@ void texture_cache_stats(TextureCacheStats *out) {
   out->failed = (int)restore_failed_count; // textures lost, not binds of them
   out->spilled = (int)card_evicted_count;
   out->reused = (int)store_reused;
+  out->reused_ram = (int)store_ram_backed;
   // Scaled back up from the sample, so these read as whole-session totals.
   out->upload_driver_ms = (int)(upload_driver_us / 1000);
   out->upload_loader_ms = (int)(upload_loader_us / 1000);

@@ -262,7 +262,8 @@ static void memory_heartbeat(void) {
   // The frame rate over the interval goes in the same line, so a slow area and
   // what the cache was doing during it are one reading rather than two.
   traceLog("mem %d (%d fps): heap %d MB (peak %d) | tex %d MB held, %d parked | "
-           "ev %d re %d fail %d later %d lost %d noalloc %d bad %d spill %d free %d | "
+           "ev %d re %d fail %d later %d lost %d noalloc %d bad %d spill %d free %d "
+           "(%d kept in ram) | "
            "vgl free ram %d cdram %d "
            "phycont %d MB | vert %d KB held, %d KB back | stream %d/%d MB, "
            "%d refused\n",
@@ -270,7 +271,7 @@ static void memory_heartbeat(void) {
            heap_mb, peak_mb, tex.tracked_mb, tex.parked_mb,
            tex.evicted, tex.restored, tex.failed, tex.restore_deferred,
            tex.subimage_dropped, tex.upload_rejected, tex.store_unsound,
-           tex.spilled, tex.reused,
+           tex.spilled, tex.reused, tex.reused_ram,
            (int)(vglMemFree(VGL_MEM_RAM) / (1024 * 1024)),
            (int)(vglMemFree(VGL_MEM_VRAM) / (1024 * 1024)),
            (int)(vglMemFree(VGL_MEM_PHYCONT) / (1024 * 1024)),

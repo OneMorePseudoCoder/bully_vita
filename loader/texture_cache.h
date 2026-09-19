@@ -61,6 +61,7 @@ typedef struct {
   int evicted, restored, failed;
   int spilled; // evictions that had to reach the memory card
   int reused;  // evictions that cost nothing, the store already holding them
+  int reused_ram; // ...of those, the ones that also parked a heap copy
   // An area load presents no frames for up to fifteen heartbeats while the game
   // uploads thousands of textures. These say how that time divides between
   // vitaGL doing the upload and the loader doing its own bookkeeping on top,
