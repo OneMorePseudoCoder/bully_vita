@@ -9,6 +9,11 @@ on:
     tags: ['clean*', 'v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag to publish a release as, e.g. clean40. Leave empty to just build.'
+        required: false
+        default: ''
 
 jobs:
   vpk:
@@ -158,14 +163,34 @@ jobs:
       # line of the log and a vpk called Bully.vpk in a downloads folder says
       # nothing about which one it is. A session was once tested on the previous
       # build and read as a result for the current one for exactly that reason.
+      # Either a tag was pushed, or a release tag was asked for by hand. The
+      # second exists because a session may only be allowed to push its own
+      # branch, and a release should not depend on who is asking for it.
+      - name: Work out the release tag
+        id: tag
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Named for the tag, because the loader prints its build id in the first
+      # line of the log and a vpk called Bully.vpk in a downloads folder says
+      # nothing about which one it is. A session was once tested on the previous
+      # build and read as a result for the current one for exactly that reason.
       - name: Name the vpk after the tag
-        if: startsWith(github.ref, 'refs/tags/')
-        run: cp build/Bully.vpk "BULLY-${GITHUB_REF_NAME^^}.vpk"
+        if: steps.tag.outputs.name != ''
+        run: |
+          TAG='${{ steps.tag.outputs.name }}'
+          cp build/Bully.vpk "BULLY-$(echo "$TAG" | tr '[:lower:]' '[:upper:]').vpk"
 
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.tag.outputs.name != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
           files: BULLY-*.vpk
           fail_on_unmatched_files: true
           generate_release_notes: true
