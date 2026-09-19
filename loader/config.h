@@ -179,12 +179,12 @@
 // for years, and one run either way settles it better than an argument does.
 #define CORE_LAYOUT_DISABLE_PATH DATA_PATH "/" "no_corefix"
 
-// An empty file here silences the log after the banner. The banner still goes
-// out, and so does one line saying the rest will not, so a log that stops
-// after two lines explains itself rather than looking like a crash at boot.
-// The frame profiler is separate and already opt in (FRAME_PROFILE_PATH):
-// delete that file to take the hooks out as well as the lines.
-#define LOG_DISABLE_PATH DATA_PATH "/" "no_log"
+// Off unless this file exists. A clean install writes nothing at all -- not
+// even the banner -- because a log nobody asked for is a file on the card that
+// grows for as long as the game runs. Create an empty file here to turn it on;
+// the frame profiler is a second, separate opt-in (FRAME_PROFILE_PATH) that
+// only means anything once this one is set.
+#define LOG_ENABLE_PATH DATA_PATH "/" "log"
 
 // Opt IN, unlike every other switch here. Hooking the engine's own frame
 // methods means relocating their prologues, and a shipping build has no reason

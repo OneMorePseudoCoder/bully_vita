@@ -193,12 +193,18 @@ int ret0(void) {
 // What the memory work reports through: which tiers came up, what the pools
 // held at the start, where the streaming budget settled. Rare events only --
 // nothing here runs per frame. Appended so a crash keeps what came before it.
-// Set once, after the banner, from LOG_DISABLE_PATH. Checked here rather than
-// at each call site so that every line the loader prints obeys it.
-static int log_quiet;
+// Resolved on the first call and never again: 1 means LOG_ENABLE_PATH exists,
+// -1 means it does not. Checked here rather than at each call site so that
+// every line the loader prints obeys it, the banner included -- a clean
+// install must not create the log file at all.
+static int log_enabled;
 
 int traceLog(char *text, ...) {
-  if (log_quiet)
+  if (!log_enabled) {
+    SceIoStat stat;
+    log_enabled = sceIoGetstat(LOG_ENABLE_PATH, &stat) >= 0 ? 1 : -1;
+  }
+  if (log_enabled < 0)
     return 0;
   va_list list;
   char string[512];
@@ -1101,10 +1107,6 @@ int main(int argc, char *argv[]) {
   // said. The compiler's own timestamp cannot be wrong about that.
   traceLog("---- Bully loader %s, store format %d ----\n", LOADER_BUILD_ID,
            BACKUP_FORMAT);
-  if (file_exists(LOG_DISABLE_PATH)) {
-    traceLog("logging: off -- delete " LOG_DISABLE_PATH " to turn it back on\n");
-    log_quiet = 1;
-  }
 
   track_thread(sceKernelGetThreadId(), "frame");
   io_census_init();
