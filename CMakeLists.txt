@@ -12,6 +12,10 @@ project(Bully C CXX)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 set(VITA_APP_NAME "Bully")
 set(VITA_TITLEID  "BULLY0000")
+# APP_VER as LiveArea shows it. This was never set, so every vpk the project
+# ever produced defaulted to 01.00 -- upstream's included. 01.01 is the first
+# release with the texture cache, and the first with a number that means one.
+set(VITA_VERSION  "01.01")
 # ATTRIBUTE2=12 is upstream's. CONTENT_ID is not: vita-mksfoex defaults it to
 # HB0001-ABCD99999_00-0000000000000000, a placeholder every homebrew built with
 # the toolchain shares, and it does not match the title id sitting next to it.
