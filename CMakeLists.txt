@@ -46,8 +46,6 @@ include_directories(${CMAKE_BINARY_DIR})
 add_executable(Bully
   loader/main.c
   loader/streaming_patch.c
-  loader/fps_cap.c
-  loader/ped_cap.c
   loader/io_census.c
   loader/frame_profile.c
   loader/prologue.c

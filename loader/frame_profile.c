@@ -32,7 +32,6 @@
 #include "so_util.h"
 #include "frame_profile.h"
 #include "prologue.h"
-#include "fps_cap.h"
 
 // kubridge takes kernel memblock types and vitasdk keeps this one to itself.
 #ifndef SCE_KERNEL_MEMBLOCK_TYPE_USER_RX
@@ -568,13 +567,20 @@ static void io_charge(unsigned spent, unsigned bytes, int kind) {
   }
 }
 
-void frame_profile_io_open(unsigned started) {
+// Both return what the call cost, so the caller has the figure without a
+// third read of the clock: io_begin took one and this takes one, and the
+// census wanted the same number. Zero when not profiling, which is also the
+// only right answer then -- io_begin returned 0, not a timestamp, and
+// subtracting that from the clock would charge the whole process uptime to
+// one read.
+unsigned frame_profile_io_open(unsigned started) {
   if (!profiling)
-    return;
+    return 0;
   unsigned spent = profile_now_us() - started;
   open_us += spent;
   io_opens++;
   io_charge(spent, 0, 1);
+  return spent;
 }
 
 void frame_profile_io_seek(void) {
@@ -586,9 +592,9 @@ unsigned frame_profile_io_begin(void) {
   return profiling ? profile_now_us() : 0;
 }
 
-void frame_profile_io_end(unsigned started, unsigned bytes) {
+unsigned frame_profile_io_end(unsigned started, unsigned bytes) {
   if (!profiling)
-    return;
+    return 0;
   unsigned spent = profile_now_us() - started;
   io_us += spent;
   io_reads++;
@@ -596,6 +602,7 @@ void frame_profile_io_end(unsigned started, unsigned bytes) {
   io_bytes_part += bytes;
   io_bytes_kb += io_bytes_part >> 10;
   io_bytes_part &= 1023;
+  return spent;
 }
 
 
@@ -690,11 +697,6 @@ void frame_profile_init(void) {
     // wrong place -- which is what CdStreamRead did, and it took the game with
     // it. args_checked is for the handful of C names that carry no arity: it
     // means somebody disassembled the function and looked.
-    // The cap lift owns ClampFPS when it is on; hook_addr cannot share.
-    if (fps_cap_lifted && !strcmp(targets[i].shown, "clampfps")) {
-      traceLog("frame profile: clampfps belongs to the cap lift this run\n");
-      continue;
-    }
     int words = mangled_arg_words(targets[i].symbol);
     if (words > 4 || (words < 0 && !targets[i].args_checked)) {
       traceLog("frame profile: %s takes %d argument words, left alone\n", targets[i].shown, words);

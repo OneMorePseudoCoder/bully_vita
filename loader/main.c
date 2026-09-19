@@ -52,8 +52,6 @@
 #include "openal_patch.h"
 
 #include "streaming_patch.h"
-#include "fps_cap.h"
-#include "ped_cap.h"
 #include "io_census.h"
 #include "frame_profile.h"
 #include "texture_cache.h"
@@ -195,7 +193,13 @@ int ret0(void) {
 // What the memory work reports through: which tiers came up, what the pools
 // held at the start, where the streaming budget settled. Rare events only --
 // nothing here runs per frame. Appended so a crash keeps what came before it.
+// Set once, after the banner, from LOG_DISABLE_PATH. Checked here rather than
+// at each call site so that every line the loader prints obeys it.
+static int log_quiet;
+
 int traceLog(char *text, ...) {
+  if (log_quiet)
+    return 0;
   va_list list;
   char string[512];
 
@@ -323,7 +327,6 @@ static void memory_heartbeat(void) {
   (void)last_loader;
 
   frame_profile_report();
-  ped_cap_report();
   io_census_report();
   thread_report(span_us);
 }
@@ -620,8 +623,6 @@ void patch_game(void) {
   hook_addr(so_symbol(&bully_mod, "_ZN16BullyApplication12OrigContinueEv"), (uintptr_t)BullyApplication__OrigContinue);
 
   // Before the profiler: they would otherwise both want ClampFPS.
-  fps_cap_init();
-  ped_cap_init();
 
   // Last, and only when asked for. It relocates the prologues it displaces, and
   // a literal load is relocated by value -- which is only the right value once
@@ -719,13 +720,10 @@ static FILE *counted_fopen(const char *filename, const char *mode) {
   // so lumping them together would hide most of whichever one is the problem.
   unsigned t0 = frame_profile_io_begin();
   FILE *f = sceLibcBridge_fopen(filename, mode);
-  frame_profile_io_open(t0);
   // And again against the path, because the totals cannot tell a thousand opens
   // of one archive from a thousand opens of a thousand files, and those want
-  // opposite fixes.
-  SceKernelSysClock now;
-  sceKernelGetProcessTime(&now);
-  io_census_open(filename, (unsigned)now - t0);
+  // opposite fixes. Same figure the profiler just took; no third clock read.
+  io_census_open(filename, frame_profile_io_open(t0));
   return f;
 }
 
@@ -737,10 +735,7 @@ static int counted_fseek(FILE *stream, long int offset, int origin) {
 static size_t counted_fread(void *ptr, size_t size, size_t count, FILE *stream) {
   unsigned t0 = frame_profile_io_begin();
   size_t got = sceLibcBridge_fread(ptr, size, count, stream);
-  frame_profile_io_end(t0, (unsigned)(got * size));
-  SceKernelSysClock now;
-  sceKernelGetProcessTime(&now);
-  io_census_read((unsigned)now - t0, (unsigned)(got * size));
+  io_census_read(frame_profile_io_end(t0, (unsigned)(got * size)), (unsigned)(got * size));
   return got;
 }
 
@@ -1106,6 +1101,10 @@ int main(int argc, char *argv[]) {
   // said. The compiler's own timestamp cannot be wrong about that.
   traceLog("---- Bully loader %s, store format %d ----\n", LOADER_BUILD_ID,
            BACKUP_FORMAT);
+  if (file_exists(LOG_DISABLE_PATH)) {
+    traceLog("logging: off -- delete " LOG_DISABLE_PATH " to turn it back on\n");
+    log_quiet = 1;
+  }
 
   track_thread(sceKernelGetThreadId(), "frame");
   io_census_init();

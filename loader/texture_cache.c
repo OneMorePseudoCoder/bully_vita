@@ -314,11 +314,20 @@ static uint32_t checksum(const void *data, uint32_t size) {
 
 // Whether the newlib heap is too far gone to be parking textures in.
 //
-// Sampled once a frame, in the tick, and only read here. mallinfo walks the
-// whole free list and takes the malloc lock to do it, so asking per eviction
-// meant taking that lock up to sixty-four times a frame -- blocking every
-// thread that wanted to allocate, exactly while the game was streaming an area
-// in and allocating hardest. That is a stutter, not a measurement.
+// Sampled at most every HEAP_SAMPLE_MS, in the tick, and only read here.
+// mallinfo walks the whole free list and takes the malloc lock to do it, so
+// asking per eviction meant taking that lock up to sixty-four times a frame --
+// blocking every thread that wanted to allocate, exactly while the game was
+// streaming an area in and allocating hardest. That is a stutter, not a
+// measurement.
+//
+// And "once a frame" was never true either: the tick is called from
+// ProcessEvents, which the event thread runs at six to seven hundred hertz --
+// about twenty-three times per rendered frame. That was 12957 mallinfo calls
+// per twenty second heartbeat, 645 ms of them, for a number the streaming gate
+// reads once per frame. It sat on the idle core so it never cost a frame, which
+// is the only reason it went unnoticed.
+#define HEAP_SAMPLE_MS 16
 static int heap_tight;
 
 // Also published, because the streaming gate needs the same figure and taking
@@ -1736,7 +1745,12 @@ void texture_cache_tick(void) {
   // sampling it inside the check meant that turning the texture cache off with
   // TEXTURE_CACHE_DISABLE_PATH silently turned the streaming gate off as well,
   // by freezing the number it decides on at zero.
-  sample_heap();
+  static uint32_t heap_sampled_ms;
+  uint32_t tick_ms = tick_now_us() / 1000;
+  if (!heap_sampled_ms || tick_ms - heap_sampled_ms >= HEAP_SAMPLE_MS) {
+    sample_heap();
+    heap_sampled_ms = tick_ms;
+  }
 
   if (!cache_enabled)
     return;

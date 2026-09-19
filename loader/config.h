@@ -179,25 +179,17 @@
 // for years, and one run either way settles it better than an argument does.
 #define CORE_LAYOUT_DISABLE_PATH DATA_PATH "/" "no_corefix"
 
+// An empty file here silences the log after the banner. The banner still goes
+// out, and so does one line saying the rest will not, so a log that stops
+// after two lines explains itself rather than looking like a crash at boot.
+// The frame profiler is separate and already opt in (FRAME_PROFILE_PATH):
+// delete that file to take the hooks out as well as the lines.
+#define LOG_DISABLE_PATH DATA_PATH "/" "no_log"
+
 // Opt IN, unlike every other switch here. Hooking the engine's own frame
 // methods means relocating their prologues, and a shipping build has no reason
 // to carry that risk: create this file to ask for the measurement.
 #define FRAME_PROFILE_PATH DATA_PATH "/" "frame_profile"
-
-// Also opt IN. The game limits its own frame rate and was measured sleeping
-// four to six milliseconds of every thirty-six to do it; this switches that off.
-// Not on by default, because a game written to a frame budget runs hotter
-// without one and anything frame rate dependent in it will move faster.
-#define FPS_CAP_DISABLE_PATH DATA_PATH "/" "no_fps_cap"
-
-// A ceiling on the ambient ped count, on top of the one the area already has.
-// About 0.9 ms of core 1 per ped, so this is the frame rate knob with the
-// largest travel -- and the only one here whose cost is paid in content rather
-// than in risk, which is why it is off unless the ped_cap file exists. It is a
-// measuring instrument: it prices the ped loop without having to move it first.
-#define PED_CAP_DEFAULT 10
-#define PED_CAP_PATH DATA_PATH "/" "ped_cap"
-#define PED_CAP_DISABLE_PATH DATA_PATH "/" "no_pedcap"
 
 // How long a vertex buffer must go unlocked before the loader takes back the
 // CPU-side copy of its data. The game keeps that copy for the life of the
@@ -470,20 +462,6 @@
 
 // Largest texture, all mipmap levels together, we are willing to copy.
 #define TEXTURE_BACKUP_MAX_KB 4096
-// Staging arena for copies waiting to be written. It has to be a good few times
-// the largest texture, or the biggest textures -- the ones most worth evicting
-// -- only ever get a copy when the queue happens to be completely empty.
-#define TEXTURE_BACKUP_STAGING_KB (4 * TEXTURE_BACKUP_MAX_KB)
-// The writer thread only ever touches the memory card, so it runs below every
-// thread the game creates (which sit at 64-65) and shares the streaming core.
-// How long an upload may wait for the writer to make room. While we are far
-// from the budget a missed copy costs nothing, so we do not wait at all; the
-// longer bound only applies once we are over budget, where stalling briefly
-// beats losing the ability to free the texture at all.
-#define TEXTURE_BACKUP_WAIT_MS 8
-#define TEXTURE_BACKUP_WAIT_MS_MAX 120
-#define TEXTURE_BACKUP_THREAD_PRIORITY 0x7F
-#define TEXTURE_BACKUP_THREAD_AFFINITY 0x40000
 
 #define DATA_PATH "ux0:data/Bully"
 #define SO_PATH DATA_PATH "/" "libBully.so"

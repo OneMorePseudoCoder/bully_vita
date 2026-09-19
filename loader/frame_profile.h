@@ -20,9 +20,9 @@ void frame_profile_report(void);
 // The game's own file reading, counted only while the profiler is on. main.c
 // wraps fopen/fseek/fread with these so that a function measured as slow can be
 // told from a card measured as slow.
-void frame_profile_io_open(unsigned started);
+unsigned frame_profile_io_open(unsigned started);
 void frame_profile_io_seek(void);
 unsigned frame_profile_io_begin(void);
-void frame_profile_io_end(unsigned started, unsigned bytes);
+unsigned frame_profile_io_end(unsigned started, unsigned bytes);
 
 #endif
